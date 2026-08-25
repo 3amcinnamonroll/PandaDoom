@@ -276,8 +276,16 @@ h2 {
   background: #d7a44ccc !important;
 }
 
+#touch-pause {
+  align-self: start;
+  min-width: 68px;
+  height: 38px;
+  font: 800 11px/1 system-ui, sans-serif;
+  letter-spacing: 0.08em;
+}
+
 @media (pointer: coarse), (max-width: 720px) {
-  .game-shell { width: 100vw; }
+  .game-shell { width: min(100vw, calc(100vh * 1.7778)); }
   .game-frame { border: 0; border-radius: 0; }
   .browser-note { display: none; }
   #touch-controls { display: flex; }

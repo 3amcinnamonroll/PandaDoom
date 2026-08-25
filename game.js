@@ -15,6 +15,7 @@
     resume: document.getElementById("resume-button"),
     restart: document.getElementById("restart-button"),
     damage: document.getElementById("damage-flash"),
+    touchPause: document.getElementById("touch-pause"),
     touchFire: document.getElementById("touch-fire"),
   };
 
@@ -54,6 +55,8 @@
   let exitPulse = 0;
   let depthBuffer = new Float32Array(WIDTH);
   let pointerWasLocked = false;
+  let mouseCaptureUnavailable = false;
+  let pendingCaptureClick = false;
 
   const enemyCatalog = {
     poacher: { name: "POACHER", color: "#793c2c", accent: "#e0bd73", hp: 2, speed: 0.68, damage: 9 },
@@ -258,7 +261,6 @@
     muzzleFlash = 1;
     shake = 4;
 
-    const wallDistance = castRay(player.angle).distance;
     let target = null;
     let targetDistance = Infinity;
     for (const enemy of enemies) {
@@ -268,7 +270,7 @@
       const distance = Math.hypot(dx, dy);
       const angle = Math.abs(normalizeAngle(Math.atan2(dy, dx) - player.angle));
       const hitWindow = Math.min(0.18, 0.36 / Math.max(distance, 1));
-      if (angle < hitWindow && distance < wallDistance + 0.15 && distance < targetDistance) {
+      if (angle < hitWindow && distance < targetDistance && hasLineOfSight(player.x, player.y, enemy.x, enemy.y)) {
         target = enemy;
         targetDistance = distance;
       }
@@ -415,14 +417,15 @@
       const distance = Math.hypot(dx, dy);
       const angle = normalizeAngle(Math.atan2(dy, dx) - player.angle);
       if (Math.abs(angle) > FOV * 0.78 || distance < 0.25) continue;
+      const spriteDepth = distance * Math.cos(angle);
       const screenX = WIDTH / 2 + Math.tan(angle) * (WIDTH / (2 * Math.tan(FOV / 2)));
-      const size = Math.min(520, (sprite.kind === "enemy" ? 360 : 170) / distance);
+      const size = Math.min(520, (sprite.kind === "enemy" ? 360 : 170) / Math.max(spriteDepth, 0.25));
       const top = VIEW_HEIGHT / 2 - size * (sprite.kind === "enemy" ? 0.62 : 0.05);
       const image = sprite.kind === "enemy" ? drawEnemySprite(sprite, size) : drawPickupSprite(sprite, size);
       const left = Math.floor(screenX - size / 2);
       for (let sx = 0; sx < Math.ceil(size); sx += 2) {
         const screenColumn = left + sx;
-        if (screenColumn < 0 || screenColumn >= WIDTH || distance >= depthBuffer[screenColumn]) continue;
+        if (screenColumn < 0 || screenColumn >= WIDTH || spriteDepth >= depthBuffer[screenColumn]) continue;
         ctx.drawImage(image, (sx / size) * image.width, 0, Math.max(1, (2 / size) * image.width), image.height, screenColumn, top, 2, size);
       }
     }
@@ -599,11 +602,34 @@
     if (next !== "won" && next !== "lost") ui.end.classList.add("hidden");
   }
 
+  function handleMouseCaptureFailure() {
+    mouseCaptureUnavailable = true;
+    const shouldFire = pendingCaptureClick;
+    pendingCaptureClick = false;
+    showMessage("MOUSE CAPTURE BLOCKED — CLICK OR SPACE TO FIRE");
+    if (shouldFire) shoot();
+  }
+
+  function requestMouseCapture(fireOnFailure = false) {
+    pendingCaptureClick = fireOnFailure;
+    if (mouseCaptureUnavailable || typeof canvas.requestPointerLock !== "function") {
+      pendingCaptureClick = false;
+      if (fireOnFailure) shoot();
+      return;
+    }
+    try {
+      const request = canvas.requestPointerLock();
+      request?.catch(handleMouseCaptureFailure);
+    } catch {
+      handleMouseCaptureFailure();
+    }
+  }
+
   function startGame() {
     resetGame();
     setState("playing");
     canvas.focus();
-    canvas.requestPointerLock?.();
+    requestMouseCapture();
   }
 
   function togglePause() {
@@ -612,7 +638,7 @@
       document.exitPointerLock?.();
     } else if (state === "paused") {
       setState("playing");
-      canvas.requestPointerLock?.();
+      requestMouseCapture();
     }
   }
 
@@ -634,16 +660,18 @@
   canvas.addEventListener("click", () => {
     if (state !== "playing") return;
     if (document.pointerLockElement === canvas) shoot();
-    else canvas.requestPointerLock?.();
+    else requestMouseCapture(true);
   });
   document.addEventListener("pointerlockchange", () => {
     if (document.pointerLockElement === canvas) {
       pointerWasLocked = true;
+      pendingCaptureClick = false;
       return;
     }
     if (state === "playing" && pointerWasLocked && !matchMedia("(pointer: coarse)").matches) setState("paused");
     pointerWasLocked = false;
   });
+  document.addEventListener("pointerlockerror", handleMouseCaptureFailure);
 
   document.querySelectorAll("[data-control]").forEach((button) => {
     const control = button.dataset.control;
@@ -654,6 +682,7 @@
     button.addEventListener("pointercancel", off);
     button.addEventListener("pointerleave", off);
   });
+  ui.touchPause.addEventListener("pointerdown", (event) => { event.preventDefault(); togglePause(); });
   ui.touchFire.addEventListener("pointerdown", (event) => { event.preventDefault(); shoot(); });
   ui.start.addEventListener("click", startGame);
   ui.resume.addEventListener("click", togglePause);

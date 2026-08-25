@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#10170f" />
+    <meta
+      name="description"
+      content="PandaDoom: a tiny original panda-themed browser raycaster."
+    />
+    <title>PandaDoom</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <main class="game-shell">
+      <section class="game-frame" aria-label="PandaDoom game">
+        <canvas id="game" width="960" height="540" aria-label="First-person game view"></canvas>
+        <div id="damage-flash" aria-hidden="true"></div>
+
+        <div id="title-screen" class="overlay">
+          <div class="title-card">
+            <p class="eyebrow">An original browser raycaster</p>
+            <h1><span>PANDA</span>DOOM</h1>
+            <div class="panda-mark" aria-hidden="true">
+              <i></i><i></i><b>•ᴥ•</b>
+            </div>
+            <p class="mission">
+              The Moon Bamboo Sanctuary is under siege. Clear the poachers,
+              snow leopards, and wildfire spirits. Then reach the green gate.
+            </p>
+            <button id="start-button" type="button">
+              <small>Difficulty</small>
+              SHOOT ME PLENTY! <span aria-hidden="true">🐼</span>
+            </button>
+            <p class="controls-copy">
+              Move: WASD / arrows · Aim: mouse or ← → · Fire: click / Space · Pause: Esc
+            </p>
+          </div>
+        </div>
+
+        <div id="pause-screen" class="overlay hidden">
+          <div class="message-card">
+            <h2>PAWS-ED</h2>
+            <p>The sanctuary can wait a moment.</p>
+            <button id="resume-button" type="button">RESUME</button>
+          </div>
+        </div>
+
+        <div id="end-screen" class="overlay hidden">
+          <div class="message-card">
+            <p id="end-kicker" class="eyebrow">Sanctuary status</p>
+            <h2 id="end-title">BAMBOO SAVED</h2>
+            <p id="end-copy"></p>
+            <button id="restart-button" type="button">PLAY AGAIN</button>
+          </div>
+        </div>
+
+        <div id="crosshair" aria-hidden="true"></div>
+
+        <div id="touch-controls" aria-label="Touch controls">
+          <div class="touch-cluster">
+            <button data-control="turnLeft" aria-label="Turn left">↶</button>
+            <button data-control="forward" aria-label="Move forward">▲</button>
+            <button data-control="turnRight" aria-label="Turn right">↷</button>
+            <button data-control="backward" aria-label="Move backward">▼</button>
+          </div>
+          <button id="touch-fire" aria-label="Fire bamboo blaster">FIRE</button>
+        </div>
+      </section>
+
+      <p class="browser-note">Click the game to capture the mouse. Headphones optional; bamboo courage required.</p>
+    </main>
+    <script src="game.js"></script>
+  </body>
+</html>

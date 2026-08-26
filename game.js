@@ -74,6 +74,7 @@
     shotCooldown: 0,
     hurtCooldown: 0,
     walkPhase: 0,
+    moveAmount: 0,
   };
 
   let enemies = [];
@@ -90,6 +91,7 @@
       shotCooldown: 0,
       hurtCooldown: 0,
       walkPhase: 0,
+      moveAmount: 0,
     });
     enemies = [
       makeEnemy("leopard", 6.4, 3.5),
@@ -208,6 +210,9 @@
       const dy = (Math.sin(player.angle) * forward + Math.sin(player.angle + Math.PI / 2) * strafe) * speed;
       moveEntity(player, dx, dy);
       player.walkPhase += dt * 10;
+      player.moveAmount = Math.min(1, player.moveAmount + dt * 7);
+    } else {
+      player.moveAmount = Math.max(0, player.moveAmount - dt * 5);
     }
 
     for (const pickup of pickups) {
@@ -313,43 +318,47 @@
   }
 
   function render() {
-    const bob = state === "playing" ? Math.sin(player.walkPhase) * 2 : 0;
+    const stride = state === "playing" ? player.moveAmount : 0;
+    const sway = Math.sin(player.walkPhase * 0.5) * 9 * stride;
+    const bob = (Math.abs(Math.sin(player.walkPhase)) - 0.45) * 6 * stride;
     const shakeX = shake ? (Math.random() - 0.5) * shake : 0;
     const shakeY = shake ? (Math.random() - 0.5) * shake : 0;
     ctx.save();
-    ctx.translate(shakeX, shakeY + bob);
+    ctx.translate(shakeX + sway, shakeY + bob);
     renderWorld();
     renderSprites();
-    renderWeapon();
+    renderWeapon(sway, bob);
+    renderGrit();
     ctx.restore();
     renderHud();
   }
 
   function renderWorld() {
     const sky = ctx.createLinearGradient(0, 0, 0, VIEW_HEIGHT / 2);
-    sky.addColorStop(0, "#0a1116");
-    sky.addColorStop(0.72, "#263a35");
-    sky.addColorStop(1, "#ad8950");
+    sky.addColorStop(0, "#020303");
+    sky.addColorStop(0.7, "#101513");
+    sky.addColorStop(1, "#39271d");
     ctx.fillStyle = sky;
     ctx.fillRect(0, 0, WIDTH, VIEW_HEIGHT / 2);
 
-    ctx.fillStyle = "#d7dbbd";
+    ctx.fillStyle = "#8c3e2e";
     ctx.beginPath();
-    ctx.arc(790, 75, 34, 0, Math.PI * 2);
+    ctx.arc(WIDTH * 0.82, 70, 27, 0, Math.PI * 2);
     ctx.fill();
-    ctx.fillStyle = "#c1c5aa";
+    ctx.fillStyle = "#46251f";
     ctx.beginPath();
-    ctx.arc(778, 65, 6, 0, Math.PI * 2);
-    ctx.arc(805, 82, 8, 0, Math.PI * 2);
+    ctx.arc(WIDTH * 0.82 - 10, 62, 6, 0, Math.PI * 2);
+    ctx.arc(WIDTH * 0.82 + 12, 78, 8, 0, Math.PI * 2);
     ctx.fill();
 
     const floor = ctx.createLinearGradient(0, VIEW_HEIGHT / 2, 0, VIEW_HEIGHT);
-    floor.addColorStop(0, "#5d4b2c");
-    floor.addColorStop(1, "#13150e");
+    floor.addColorStop(0, "#2c2319");
+    floor.addColorStop(1, "#070806");
     ctx.fillStyle = floor;
     ctx.fillRect(0, VIEW_HEIGHT / 2, WIDTH, VIEW_HEIGHT / 2);
+    renderFloorBands();
 
-    const rayCount = 480;
+    const rayCount = 320;
     const stripWidth = WIDTH / rayCount;
     for (let ray = 0; ray < rayCount; ray += 1) {
       const rayAngle = player.angle - FOV / 2 + (ray / rayCount) * FOV;
@@ -357,21 +366,25 @@
       const corrected = Math.max(0.01, hit.distance * Math.cos(rayAngle - player.angle));
       const wallHeight = Math.min(VIEW_HEIGHT * 1.8, VIEW_HEIGHT / corrected);
       const top = VIEW_HEIGHT / 2 - wallHeight / 2;
-      const shade = Math.max(0.2, 1 - corrected / MAX_DEPTH) * (hit.side ? 0.8 : 1);
-      const stripe = Math.floor(hit.textureOffset * 8) % 2;
+      const shade = Math.max(0.12, 0.92 - corrected / (MAX_DEPTH * 0.72)) * (hit.side ? 0.68 : 1);
+      const stripe = Math.floor(hit.textureOffset * 10) % 2;
       let color;
       if (hit.cell === "2") {
-        const base = stripe ? [92, 117, 49] : [128, 151, 65];
+        const base = stripe ? [40, 60, 27] : [63, 83, 34];
         color = `rgb(${base.map((value) => Math.floor(value * shade)).join(",")})`;
       } else {
-        const base = stripe ? [81, 76, 55] : [105, 96, 65];
+        const base = stripe ? [54, 45, 34] : [72, 59, 42];
         color = `rgb(${base.map((value) => Math.floor(value * shade)).join(",")})`;
       }
       ctx.fillStyle = color;
       ctx.fillRect(ray * stripWidth, top, Math.ceil(stripWidth + 1), wallHeight);
-      if (hit.cell === "2" && Math.floor(hit.textureOffset * 20) % 10 === 0) {
-        ctx.fillStyle = `rgba(25,35,18,${0.28 * shade})`;
+      if (hit.cell === "2" && Math.floor(hit.textureOffset * 24) % 8 === 0) {
+        ctx.fillStyle = `rgba(5,8,4,${0.58 * shade})`;
         ctx.fillRect(ray * stripWidth, top, Math.ceil(stripWidth + 1), wallHeight);
+      }
+      if (Math.floor((top + wallHeight) / 34) % 2 === 0) {
+        ctx.fillStyle = `rgba(0,0,0,${0.07 + corrected / 180})`;
+        ctx.fillRect(ray * stripWidth, top + wallHeight * 0.48, Math.ceil(stripWidth + 1), Math.max(2, wallHeight * 0.025));
       }
       const start = Math.floor(ray * stripWidth);
       const end = Math.min(WIDTH, Math.ceil((ray + 1) * stripWidth));
@@ -379,6 +392,29 @@
     }
 
     renderExitGate();
+  }
+
+  function renderFloorBands() {
+    const horizon = VIEW_HEIGHT / 2;
+    for (let y = horizon + 8; y < VIEW_HEIGHT; y += 9) {
+      const depth = (y - horizon) / (VIEW_HEIGHT - horizon);
+      const offset = Math.floor((player.x + player.y) * 19 + player.angle * 31) % 44;
+      ctx.fillStyle = `rgba(111,82,48,${0.035 + depth * 0.07})`;
+      for (let x = -offset; x < WIDTH; x += Math.max(18, 64 - Math.floor(depth * 34))) {
+        ctx.fillRect(x, y, Math.max(7, depth * 18), Math.max(2, depth * 5));
+      }
+    }
+  }
+
+  function renderGrit() {
+    ctx.fillStyle = "rgba(0,0,0,0.1)";
+    for (let y = 0; y < VIEW_HEIGHT; y += 4) ctx.fillRect(0, y, WIDTH, 1);
+    const vignette = ctx.createRadialGradient(WIDTH / 2, VIEW_HEIGHT * 0.45, VIEW_HEIGHT * 0.2, WIDTH / 2, VIEW_HEIGHT * 0.45, WIDTH * 0.65);
+    vignette.addColorStop(0, "rgba(0,0,0,0)");
+    vignette.addColorStop(0.7, "rgba(0,0,0,0.13)");
+    vignette.addColorStop(1, "rgba(0,0,0,0.78)");
+    ctx.fillStyle = vignette;
+    ctx.fillRect(0, 0, WIDTH, VIEW_HEIGHT);
   }
 
   function renderExitGate() {
@@ -420,67 +456,97 @@
       const spriteDepth = distance * Math.cos(angle);
       const screenX = WIDTH / 2 + Math.tan(angle) * (WIDTH / (2 * Math.tan(FOV / 2)));
       const size = Math.min(520, (sprite.kind === "enemy" ? 360 : 170) / Math.max(spriteDepth, 0.25));
-      const top = VIEW_HEIGHT / 2 - size * (sprite.kind === "enemy" ? 0.62 : 0.05);
+      const groundY = VIEW_HEIGHT / 2 + size * (sprite.kind === "enemy" ? 0.5 : 0.48);
+      const top = groundY - size;
       const image = sprite.kind === "enemy" ? drawEnemySprite(sprite, size) : drawPickupSprite(sprite, size);
       const left = Math.floor(screenX - size / 2);
-      for (let sx = 0; sx < Math.ceil(size); sx += 2) {
+      if (sprite.kind === "enemy" && screenX >= 0 && screenX < WIDTH && spriteDepth < depthBuffer[Math.floor(screenX)]) {
+        ctx.fillStyle = `rgba(0,0,0,${Math.min(0.68, 0.35 + 0.04 * distance)})`;
+        ctx.beginPath();
+        ctx.ellipse(screenX, groundY - size * 0.035, size * 0.34, size * 0.085, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      for (let sx = 0; sx < Math.ceil(size); sx += 3) {
         const screenColumn = left + sx;
         if (screenColumn < 0 || screenColumn >= WIDTH || spriteDepth >= depthBuffer[screenColumn]) continue;
-        ctx.drawImage(image, (sx / size) * image.width, 0, Math.max(1, (2 / size) * image.width), image.height, screenColumn, top, 2, size);
+        ctx.drawImage(image, (sx / size) * image.width, 0, Math.max(1, (3 / size) * image.width), image.height, screenColumn, top, 3, size);
       }
     }
   }
 
   function spriteCanvas() {
     const offscreen = document.createElement("canvas");
-    offscreen.width = 96;
-    offscreen.height = 96;
-    return [offscreen, offscreen.getContext("2d")];
+    offscreen.width = 64;
+    offscreen.height = 64;
+    const spriteContext = offscreen.getContext("2d");
+    spriteContext.imageSmoothingEnabled = false;
+    spriteContext.scale(2 / 3, 2 / 3);
+    return [offscreen, spriteContext];
   }
 
   function drawEnemySprite(enemy) {
     const [sprite, s] = spriteCanvas();
     const data = enemyCatalog[enemy.type];
-    s.translate(48, 48 + Math.sin(enemy.phase) * 2);
-    s.fillStyle = "#0008";
-    s.beginPath();
-    s.ellipse(0, 38, 31, 7, 0, 0, Math.PI * 2);
-    s.fill();
+    const motion = Math.sin(enemy.phase) * 2;
+    s.translate(48, 48);
+    s.fillStyle = "#000c";
+    s.beginPath(); s.ellipse(0, 41, 34, 6, 0, 0, Math.PI * 2); s.fill();
     if (enemy.type === "fire") {
-      s.fillStyle = data.color;
+      s.fillStyle = "#2b1912";
+      s.fillRect(-23, 31, 15, 12); s.fillRect(8, 31, 15, 12);
+      s.fillStyle = "#080705";
+      s.fillRect(-27, 39, 20, 6); s.fillRect(7, 39, 22, 6);
+      const flame = s.createLinearGradient(-26, 34, 22, -42);
+      flame.addColorStop(0, "#591d12"); flame.addColorStop(0.45, data.color); flame.addColorStop(1, "#7b2515");
+      s.fillStyle = flame;
       s.beginPath();
-      s.moveTo(-27, 33); s.quadraticCurveTo(-38, 2, -15, -13);
-      s.quadraticCurveTo(-17, -36, 2, -46); s.quadraticCurveTo(28, -20, 18, -2);
-      s.quadraticCurveTo(42, 13, 25, 34); s.closePath(); s.fill();
+      s.moveTo(-29, 34); s.lineTo(-37, 4); s.lineTo(-21 + motion, -10);
+      s.lineTo(-13, -39); s.lineTo(1 + motion, -25); s.lineTo(12, -45);
+      s.lineTo(20, -15); s.lineTo(36, 3); s.lineTo(27, 34); s.closePath(); s.fill();
       s.fillStyle = data.accent;
       s.beginPath();
-      s.moveTo(-11, 27); s.quadraticCurveTo(-19, 2, 1, -19);
-      s.quadraticCurveTo(19, 6, 11, 29); s.closePath(); s.fill();
-      s.fillStyle = "#1d120b"; s.fillRect(-15, -1, 9, 6); s.fillRect(8, -1, 9, 6);
+      s.moveTo(-13, 27); s.lineTo(-16, 4); s.lineTo(1, -19); s.lineTo(16, 5); s.lineTo(12, 29); s.closePath(); s.fill();
+      s.fillStyle = "#1a0d08"; s.fillRect(-17, -2, 11, 8); s.fillRect(7, -2, 11, 8);
+      s.fillStyle = "#ff442d"; s.fillRect(-14, 0, 5, 3); s.fillRect(10, 0, 5, 3);
     } else if (enemy.type === "leopard") {
-      s.fillStyle = data.color;
-      s.beginPath(); s.ellipse(0, 8, 35, 25, 0, 0, Math.PI * 2); s.fill();
-      s.beginPath(); s.arc(27, -12, 20, 0, Math.PI * 2); s.fill();
-      s.beginPath(); s.arc(17, -28, 8, 0, Math.PI * 2); s.arc(37, -28, 8, 0, Math.PI * 2); s.fill();
-      s.lineWidth = 8; s.strokeStyle = data.color; s.beginPath(); s.arc(-31, -4, 25, 1.5, 4.8); s.stroke();
+      s.fillStyle = "#333b3a";
+      s.fillRect(-27 + motion, 20, 12, 23); s.fillRect(-4 - motion, 20, 12, 23); s.fillRect(17 + motion, 16, 12, 27);
+      s.fillStyle = "#111514";
+      s.fillRect(-30 + motion, 38, 17, 7); s.fillRect(-7 - motion, 38, 17, 7); s.fillRect(15 + motion, 38, 18, 7);
+      const fur = s.createLinearGradient(-32, 0, 31, 15);
+      fur.addColorStop(0, "#596463"); fur.addColorStop(0.52, data.color); fur.addColorStop(1, "#768180");
+      s.fillStyle = fur;
+      s.beginPath(); s.ellipse(-4, 6, 37, 25, -0.08, 0, Math.PI * 2); s.fill();
+      s.beginPath(); s.ellipse(25, -12, 22, 21, -0.15, 0, Math.PI * 2); s.fill();
+      s.fillStyle = "#737f7d";
+      s.beginPath(); s.moveTo(9, -24); s.lineTo(14, -39); s.lineTo(24, -27); s.closePath(); s.fill();
+      s.beginPath(); s.moveTo(29, -29); s.lineTo(39, -40); s.lineTo(44, -23); s.closePath(); s.fill();
+      s.lineWidth = 9; s.strokeStyle = "#596463"; s.beginPath(); s.arc(-35, -4, 27, 1.4, 4.8); s.stroke();
       s.fillStyle = data.accent;
-      for (const [x, y] of [[-20,-2],[-5,8],[12,4],[-12,20],[23,16],[22,-13],[34,-13]]) {
-        s.beginPath(); s.arc(x, y, 3.5, 0, Math.PI * 2); s.fill();
+      for (const [x, y] of [[-25,-4],[-10,7],[5,1],[-16,19],[14,15],[18,-15],[34,-15]]) {
+        s.fillRect(x, y, 6, 5);
       }
-      s.fillStyle = "#e8ff82"; s.fillRect(20, -17, 5, 4); s.fillRect(32, -17, 5, 4);
-      s.fillStyle = "#303534"; s.fillRect(-25, 23, 9, 15); s.fillRect(15, 23, 9, 15);
+      s.fillStyle = "#ff4130"; s.fillRect(18, -18, 6, 4); s.fillRect(33, -18, 6, 4);
+      s.fillStyle = "#1a1c1b";
+      s.beginPath(); s.moveTo(20, -3); s.lineTo(43, -3); s.lineTo(34, 10); s.lineTo(25, 8); s.closePath(); s.fill();
+      s.fillStyle = "#ddd8bd";
+      s.beginPath(); s.moveTo(26, 5); s.lineTo(30, 14); s.lineTo(34, 5); s.closePath(); s.fill();
+      s.beginPath(); s.moveTo(35, 4); s.lineTo(39, 12); s.lineTo(42, 2); s.closePath(); s.fill();
     } else {
-      s.fillStyle = data.color;
-      s.fillRect(-21, -5, 42, 45);
-      s.fillStyle = "#a88763";
-      s.beginPath(); s.arc(0, -20, 17, 0, Math.PI * 2); s.fill();
-      s.fillStyle = "#34452c";
-      s.beginPath(); s.ellipse(0, -30, 28, 7, 0, 0, Math.PI * 2); s.fill();
-      s.fillRect(-16, -40, 32, 11);
-      s.strokeStyle = data.accent; s.lineWidth = 7;
-      s.beginPath(); s.moveTo(13, 3); s.lineTo(31, 30); s.stroke();
-      s.fillStyle = "#15170f"; s.fillRect(-15, -24, 8, 5); s.fillRect(7, -24, 8, 5);
-      s.fillStyle = "#28271f"; s.fillRect(-20, 35, 15, 9); s.fillRect(5, 35, 15, 9);
+      s.fillStyle = "#171712";
+      s.fillRect(-21 + motion, 19, 15, 25); s.fillRect(6 - motion, 19, 15, 25);
+      s.fillStyle = "#080907"; s.fillRect(-25 + motion, 39, 21, 6); s.fillRect(4 - motion, 39, 23, 6);
+      const coat = s.createLinearGradient(-29, -4, 29, 30);
+      coat.addColorStop(0, "#3b201b"); coat.addColorStop(0.55, data.color); coat.addColorStop(1, "#2d1713");
+      s.fillStyle = coat;
+      s.beginPath(); s.moveTo(-33, 25); s.lineTo(-28, -10); s.lineTo(-17, -20); s.lineTo(17, -20); s.lineTo(31, -7); s.lineTo(34, 27); s.closePath(); s.fill();
+      s.fillStyle = "#6e4d35"; s.beginPath(); s.arc(0, -24, 17, 0, Math.PI * 2); s.fill();
+      s.fillStyle = "#202b1d"; s.beginPath(); s.ellipse(0, -34, 30, 8, 0, 0, Math.PI * 2); s.fill(); s.fillRect(-18, -43, 36, 11);
+      s.fillStyle = "#080908"; s.fillRect(-15, -28, 30, 8);
+      s.fillStyle = "#e02f29"; s.fillRect(-12, -26, 7, 3); s.fillRect(5, -26, 7, 3);
+      s.strokeStyle = "#17140e"; s.lineWidth = 8; s.beginPath(); s.moveTo(-30, 2); s.lineTo(27, 16); s.stroke();
+      s.strokeStyle = data.accent; s.lineWidth = 3; s.beginPath(); s.moveTo(-35, -3); s.lineTo(34, 14); s.stroke();
+      s.fillStyle = "#17140e"; s.fillRect(25, 10, 19, 8);
     }
     if (enemy.hitFlash > 0) {
       s.globalCompositeOperation = "source-atop";
@@ -507,38 +573,62 @@
     return sprite;
   }
 
-  function renderWeapon() {
-    const recoil = muzzleFlash * 18;
+  function renderWeapon(sway, bob) {
+    const recoil = muzzleFlash * 22;
+    const gait = Math.sin(player.walkPhase * 0.5) * 13 * player.moveAmount;
     ctx.save();
-    ctx.translate(WIDTH / 2, VIEW_HEIGHT - 4 + recoil);
-    ctx.fillStyle = "#1a1d16";
-    ctx.beginPath(); ctx.ellipse(-62, 44, 82, 54, -0.25, 0, Math.PI * 2); ctx.fill();
-    ctx.beginPath(); ctx.ellipse(62, 44, 82, 54, 0.25, 0, Math.PI * 2); ctx.fill();
-    ctx.fillStyle = "#d8d4c3";
-    ctx.beginPath(); ctx.ellipse(-63, 42, 44, 32, -0.25, 0, Math.PI * 2); ctx.fill();
-    ctx.beginPath(); ctx.ellipse(63, 42, 44, 32, 0.25, 0, Math.PI * 2); ctx.fill();
-    ctx.fillStyle = "#557436"; ctx.fillRect(-18, -26, 36, 94);
-    ctx.fillStyle = "#91ad52"; ctx.fillRect(-10, -26, 10, 94);
-    ctx.fillStyle = "#2b3e23"; ctx.fillRect(-21, -11, 42, 8); ctx.fillRect(-21, 23, 42, 8);
+    ctx.translate(WIDTH / 2 + sway * 1.25 + gait, VIEW_HEIGHT - 2 + recoil + bob * 0.65);
+
+    ctx.fillStyle = "#090a08";
+    ctx.beginPath(); ctx.ellipse(-58 - gait * 0.2, 50, 77, 47, -0.15, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(73 + gait * 0.15, 52, 78, 48, 0.18, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "#c8c4b5";
+    ctx.beginPath(); ctx.ellipse(-54 - gait * 0.2, 43, 38, 29, -0.2, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(66 + gait * 0.15, 45, 39, 30, 0.22, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "#151714";
+    ctx.beginPath(); ctx.ellipse(-61 - gait * 0.2, 40, 17, 13, -0.2, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(71 + gait * 0.15, 41, 18, 13, 0.22, 0, Math.PI * 2); ctx.fill();
+
+    const bamboo = ctx.createLinearGradient(-16, 66, 45, -70);
+    bamboo.addColorStop(0, "#314520");
+    bamboo.addColorStop(0.5, "#66863a");
+    bamboo.addColorStop(1, "#9bab5c");
+    ctx.fillStyle = "#11160e";
+    ctx.beginPath(); ctx.moveTo(-23, 72); ctx.lineTo(61, 78); ctx.lineTo(13, -91); ctx.lineTo(-9, -90); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = bamboo;
+    ctx.beginPath(); ctx.moveTo(-14, 68); ctx.lineTo(52, 73); ctx.lineTo(10, -87); ctx.lineTo(-5, -87); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = "rgba(188,205,111,0.32)";
+    ctx.beginPath(); ctx.moveTo(-4, 64); ctx.lineTo(12, 66); ctx.lineTo(5, -84); ctx.lineTo(0, -84); ctx.closePath(); ctx.fill();
+
+    ctx.strokeStyle = "#1b2814";
+    ctx.lineWidth = 7;
+    for (const [y, left, right] of [[35, -5, 42], [-4, -1, 31], [-38, 1, 21], [-66, 1, 15]]) {
+      ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(right, y + 2); ctx.stroke();
+    }
+    ctx.fillStyle = "#10120d";
+    ctx.beginPath(); ctx.ellipse(3, -88, 11, 5, 0.08, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = "#a0af62"; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.ellipse(3, -88, 11, 5, 0.08, 0, Math.PI * 2); ctx.stroke();
+
     if (muzzleFlash > 0.15) {
-      ctx.fillStyle = `rgba(255,214,74,${muzzleFlash})`;
+      ctx.fillStyle = `rgba(238,118,44,${muzzleFlash})`;
       ctx.beginPath();
-      ctx.moveTo(0, -20); ctx.lineTo(-38, -78); ctx.lineTo(-7, -67);
-      ctx.lineTo(0, -108); ctx.lineTo(10, -66); ctx.lineTo(38, -78); ctx.closePath(); ctx.fill();
+      ctx.moveTo(3, -91); ctx.lineTo(-19, -116); ctx.lineTo(-2, -110);
+      ctx.lineTo(5, -132); ctx.lineTo(10, -108); ctx.lineTo(26, -117); ctx.closePath(); ctx.fill();
     }
     ctx.restore();
   }
 
   function renderHud() {
-    ctx.fillStyle = "#161913";
+    ctx.fillStyle = "#090a08";
     ctx.fillRect(0, VIEW_HEIGHT, WIDTH, HEIGHT - VIEW_HEIGHT);
-    ctx.fillStyle = "#30352a";
+    ctx.fillStyle = "#30271d";
     ctx.fillRect(0, VIEW_HEIGHT, WIDTH, 5);
-    ctx.fillStyle = "#8ea04f";
+    ctx.fillStyle = player.health <= 30 ? "#8c241c" : "#566b32";
     ctx.fillRect(0, VIEW_HEIGHT, WIDTH * (player.health / 100), 5);
 
     drawHudNumber(36, 493, player.health, "HEALTH", player.health <= 30 ? "#e84d37" : "#f1edda");
-    drawPandaFace(WIDTH / 2, 496);
+    drawPandaFace(WIDTH / 2 + Math.sin(player.walkPhase * 0.5) * 4 * player.moveAmount, 496);
     drawHudNumber(WIDTH - 36, 493, player.ammo, "BAMBOO", "#d5c36f", true);
 
     ctx.font = "800 15px system-ui, sans-serif";

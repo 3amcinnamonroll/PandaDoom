@@ -21,8 +21,8 @@ body {
   place-items: center;
   overflow: hidden;
   background:
-    radial-gradient(circle at 50% 10%, #293623 0, #11190f 38%, #070a07 78%),
-    #090d09;
+    radial-gradient(circle at 50% 10%, #241b16 0, #0d100c 38%, #030403 78%),
+    #030403;
 }
 
 button {
@@ -38,10 +38,10 @@ button {
   width: 100%;
   aspect-ratio: 16 / 9;
   overflow: hidden;
-  border: 4px solid #151a12;
-  border-radius: 6px;
+  border: 4px solid #0a0b09;
+  border-radius: 0;
   background: #000;
-  box-shadow: 0 0 0 2px #596147, 0 25px 70px #000c;
+  box-shadow: 0 0 0 2px #443a2a, 0 25px 70px #000;
   touch-action: none;
 }
 
@@ -60,9 +60,8 @@ button {
   place-items: center;
   padding: 22px;
   background:
-    linear-gradient(#071007cc, #151409e8),
-    repeating-linear-gradient(90deg, transparent 0 38px, #93a84918 39px 43px);
-  backdrop-filter: blur(2px);
+    linear-gradient(#050604e8, #17100bed),
+    repeating-linear-gradient(90deg, transparent 0 38px, #6f773518 39px 43px);
 }
 
 .hidden {
@@ -74,9 +73,9 @@ button {
   width: min(690px, 94%);
   padding: clamp(20px, 4vw, 42px);
   text-align: center;
-  border: 2px solid #a4b65b;
-  background: #10160ee8;
-  box-shadow: inset 0 0 0 5px #25301f, 0 16px 60px #000d;
+  border: 3px solid #6c743b;
+  background: #090b08f2;
+  box-shadow: inset 0 0 0 5px #211d16, 0 16px 60px #000;
 }
 
 .eyebrow {
@@ -98,7 +97,7 @@ h2 {
 }
 
 h1 span {
-  color: #a9c75d;
+  color: #778b42;
 }
 
 h2 {
@@ -150,10 +149,10 @@ h2 {
 .message-card button {
   min-width: min(360px, 100%);
   padding: 13px 24px 15px;
-  border: 2px solid #e9e4c8;
-  color: #12150e;
-  background: #b8d55e;
-  box-shadow: 0 6px 0 #657c2f;
+  border: 2px solid #b9b59d;
+  color: #0b0c09;
+  background: #87994b;
+  box-shadow: 0 6px 0 #3c4724;
   cursor: pointer;
   font-size: clamp(19px, 3vw, 27px);
   line-height: 1;

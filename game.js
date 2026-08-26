@@ -1107,21 +1107,34 @@
         const dy = globalY + 0.5 - centerY;
         const localX = dx * cosine + dy * sine;
         const localY = -dx * sine + dy * cosine;
-        let color = null;
+        let red = 0;
+        let green = 0;
+        let blue = 0;
+        let alpha = 0;
         if (fireball) {
-          if (Math.abs(dx) <= size * 0.85 && Math.abs(dy) <= size * 0.85) color = [131, 22, 8, 128];
-          if (Math.abs(localX) <= size * 0.62 && Math.abs(localY) <= size * 0.62) color = [231, 68, 25, 255];
-          if (Math.abs(localX) <= size * 0.3 && Math.abs(localY) <= size * 0.3) color = [255, 189, 53, 255];
+          if (Math.abs(dx) <= size * 0.85 && Math.abs(dy) <= size * 0.85) {
+            red = 131; green = 22; blue = 8; alpha = 128;
+          }
+          if (Math.abs(localX) <= size * 0.62 && Math.abs(localY) <= size * 0.62) {
+            red = 231; green = 68; blue = 25; alpha = 255;
+          }
+          if (Math.abs(localX) <= size * 0.3 && Math.abs(localY) <= size * 0.3) {
+            red = 255; green = 189; blue = 53; alpha = 255;
+          }
         } else {
-          if (localX >= -size * 3.4 && localX <= size * 0.8 && Math.abs(localY) <= size) color = [255, 54, 30, 96];
-          if (Math.abs(localX) <= size * 0.6 && Math.abs(localY) <= size * 0.5) color = [255, 203, 88, 255];
+          if (localX >= -size * 3.4 && localX <= size * 0.8 && Math.abs(localY) <= size) {
+            red = 255; green = 54; blue = 30; alpha = 96;
+          }
+          if (Math.abs(localX) <= size * 0.6 && Math.abs(localY) <= size * 0.5) {
+            red = 255; green = 203; blue = 88; alpha = 255;
+          }
         }
-        if (!color) continue;
+        if (alpha === 0) continue;
         const pixel = ((globalY - originY) * width + globalX - originX) * 4;
-        image.data[pixel] = color[0];
-        image.data[pixel + 1] = color[1];
-        image.data[pixel + 2] = color[2];
-        image.data[pixel + 3] = color[3];
+        image.data[pixel] = red;
+        image.data[pixel + 1] = green;
+        image.data[pixel + 2] = blue;
+        image.data[pixel + 3] = alpha;
       }
     }
     meshContext.clearRect(originX, originY, width, height);

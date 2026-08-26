@@ -15,6 +15,7 @@
     resume: document.getElementById("resume-button"),
     restart: document.getElementById("restart-button"),
     damage: document.getElementById("damage-flash"),
+    crosshair: document.getElementById("crosshair"),
     touchPause: document.getElementById("touch-pause"),
     touchFire: document.getElementById("touch-fire"),
   };
@@ -44,6 +45,7 @@
   const FOV = Math.PI / 3;
   const MAX_DEPTH = 22;
   const PLAYER_RADIUS = 0.2;
+  const AIM_BOUNDS = { left: WIDTH * 0.18, right: WIDTH * 0.82, top: VIEW_HEIGHT * 0.16, bottom: VIEW_HEIGHT * 0.84 };
   const keys = Object.create(null);
   const touch = Object.create(null);
   let state = "title";
@@ -54,6 +56,7 @@
   let messageTimer = 3;
   let exitPulse = 0;
   let depthBuffer = new Float32Array(WIDTH);
+  const aim = { x: WIDTH / 2, y: VIEW_HEIGHT / 2 };
   let pointerWasLocked = false;
   let mouseCaptureUnavailable = false;
   let pendingCaptureClick = false;
@@ -79,6 +82,7 @@
 
   let enemies = [];
   let pickups = [];
+  let darts = [];
 
   function resetGame() {
     Object.assign(player, {
@@ -105,6 +109,8 @@
       { type: "health", x: 5.5, y: 12.5, active: true },
       { type: "ammo", x: 12.5, y: 14.2, active: true },
     ];
+    darts = [];
+    setAim(WIDTH / 2, VIEW_HEIGHT / 2);
     message = "CLEAR 5 THREATS — FIND THE GREEN GATE";
     messageTimer = 4;
     muzzleFlash = 0;
@@ -148,6 +154,17 @@
     while (angle > Math.PI) angle -= Math.PI * 2;
     while (angle < -Math.PI) angle += Math.PI * 2;
     return angle;
+  }
+
+  function clamp(value, minimum, maximum) {
+    return Math.max(minimum, Math.min(maximum, value));
+  }
+
+  function setAim(x, y) {
+    aim.x = clamp(x, AIM_BOUNDS.left, AIM_BOUNDS.right);
+    aim.y = clamp(y, AIM_BOUNDS.top, AIM_BOUNDS.bottom);
+    ui.crosshair.style.left = `${(aim.x / WIDTH) * 100}%`;
+    ui.crosshair.style.top = `${(aim.y / HEIGHT) * 100}%`;
   }
 
   function castRay(angle) {
@@ -201,6 +218,10 @@
       ((keys.ArrowLeft || keys.KeyQ || touch.turnLeft) ? 1 : 0);
     player.angle = normalizeAngle(player.angle + turn * 2.15 * dt);
 
+    const aimHorizontal = (keys.KeyL ? 1 : 0) - (keys.KeyJ ? 1 : 0);
+    const aimVertical = (keys.KeyK ? 1 : 0) - (keys.KeyI ? 1 : 0);
+    if (aimHorizontal || aimVertical) setAim(aim.x + aimHorizontal * 260 * dt, aim.y + aimVertical * 260 * dt);
+
     const forward = ((keys.KeyW || keys.ArrowUp || touch.forward) ? 1 : 0) -
       ((keys.KeyS || keys.ArrowDown || touch.backward) ? 1 : 0);
     const strafe = (keys.KeyD ? 1 : 0) - (keys.KeyA ? 1 : 0);
@@ -234,6 +255,7 @@
     }
 
     updateEnemies(dt);
+    updateDarts(dt);
 
     if (player.kills === enemies.length && Math.hypot(player.x - 13.5, player.y - 13.5) < 0.7) {
       finish(true);
@@ -260,6 +282,41 @@
     }
   }
 
+  function projectEnemy(enemy) {
+    const dx = enemy.x - player.x;
+    const dy = enemy.y - player.y;
+    const distance = Math.hypot(dx, dy);
+    const angle = normalizeAngle(Math.atan2(dy, dx) - player.angle);
+    if (Math.abs(angle) > FOV * 0.78 || distance < 0.25) return null;
+    const depth = distance * Math.cos(angle);
+    const screenX = WIDTH / 2 + Math.tan(angle) * (WIDTH / (2 * Math.tan(FOV / 2)));
+    const size = Math.min(520, 360 / Math.max(depth, 0.25));
+    const groundY = VIEW_HEIGHT / 2 + size * 0.5;
+    return { distance, depth, screenX, size, groundY, top: groundY - size };
+  }
+
+  function damageEnemy(enemy) {
+    if (!enemy?.alive) return;
+    enemy.hp -= 1;
+    enemy.hitFlash = 1;
+    if (enemy.hp > 0) return;
+    enemy.alive = false;
+    player.kills += 1;
+    const remaining = enemies.length - player.kills;
+    showMessage(remaining ? `${enemyCatalog[enemy.type].name} CLEARED — ${remaining} LEFT` : "ALL CLEAR — FIND THE GREEN GATE");
+  }
+
+  function updateDarts(dt) {
+    for (const dart of darts) {
+      dart.age += dt;
+      if (!dart.resolved && dart.age >= dart.duration) {
+        dart.resolved = true;
+        damageEnemy(dart.target);
+      }
+    }
+    darts = darts.filter((dart) => dart.age < dart.duration + 0.08);
+  }
+
   function shoot() {
     if (state !== "playing" || player.shotCooldown > 0) return;
     if (player.ammo <= 0) {
@@ -276,25 +333,30 @@
     let targetDistance = Infinity;
     for (const enemy of enemies) {
       if (!enemy.alive) continue;
-      const dx = enemy.x - player.x;
-      const dy = enemy.y - player.y;
-      const distance = Math.hypot(dx, dy);
-      const angle = Math.abs(normalizeAngle(Math.atan2(dy, dx) - player.angle));
-      const hitWindow = Math.min(0.18, 0.36 / Math.max(distance, 1));
-      if (angle < hitWindow && distance < targetDistance && hasLineOfSight(player.x, player.y, enemy.x, enemy.y)) {
+      const projection = projectEnemy(enemy);
+      if (!projection) continue;
+      const withinX = Math.abs(aim.x - projection.screenX) < projection.size * 0.42;
+      const withinY = aim.y > projection.top + projection.size * 0.05 && aim.y < projection.groundY - projection.size * 0.04;
+      const visibleAtAim = aim.x >= 0 && aim.x < WIDTH && projection.depth < depthBuffer[Math.floor(aim.x)] + 0.08;
+      if (withinX && withinY && visibleAtAim && projection.distance < targetDistance && hasLineOfSight(player.x, player.y, enemy.x, enemy.y)) {
         target = enemy;
-        targetDistance = distance;
+        targetDistance = projection.distance;
       }
     }
-    if (!target) return;
-    target.hp -= 1;
-    target.hitFlash = 1;
-    if (target.hp <= 0) {
-      target.alive = false;
-      player.kills += 1;
-      const remaining = enemies.length - player.kills;
-      showMessage(remaining ? `${enemyCatalog[target.type].name} CLEARED — ${remaining} LEFT` : "ALL CLEAR — FIND THE GREEN GATE");
-    }
+    const stride = player.moveAmount;
+    const sway = Math.sin(player.walkPhase * 0.5) * 9 * stride;
+    const bob = (Math.abs(Math.sin(player.walkPhase)) - 0.45) * 6 * stride;
+    const pose = weaponPose(sway, bob);
+    darts.push({
+      age: 0,
+      duration: target ? clamp(0.16 + targetDistance * 0.025, 0.18, 0.38) : 0.24,
+      startX: pose.muzzleX,
+      startY: pose.muzzleY,
+      endX: aim.x,
+      endY: aim.y,
+      target,
+      resolved: false,
+    });
   }
 
   function hurtPlayer(amount) {
@@ -335,6 +397,7 @@
     ctx.translate(shakeX, shakeY);
     renderWorld();
     renderSprites();
+    renderDarts();
     renderWeapon(sway, bob);
     renderGrit();
     ctx.restore();
@@ -460,10 +523,11 @@
       const dy = sprite.y - player.y;
       const distance = Math.hypot(dx, dy);
       const angle = normalizeAngle(Math.atan2(dy, dx) - player.angle);
-      if (Math.abs(angle) > FOV * 0.78 || distance < 0.25) continue;
-      const spriteDepth = distance * Math.cos(angle);
-      const screenX = WIDTH / 2 + Math.tan(angle) * (WIDTH / (2 * Math.tan(FOV / 2)));
-      const size = Math.min(520, (sprite.kind === "enemy" ? 360 : 170) / Math.max(spriteDepth, 0.25));
+      const enemyProjection = sprite.kind === "enemy" ? projectEnemy(sprite) : null;
+      if ((sprite.kind === "enemy" && !enemyProjection) || (sprite.kind !== "enemy" && (Math.abs(angle) > FOV * 0.78 || distance < 0.25))) continue;
+      const spriteDepth = enemyProjection?.depth ?? distance * Math.cos(angle);
+      const screenX = enemyProjection?.screenX ?? WIDTH / 2 + Math.tan(angle) * (WIDTH / (2 * Math.tan(FOV / 2)));
+      const size = enemyProjection?.size ?? Math.min(520, 170 / Math.max(spriteDepth, 0.25));
       const groundY = VIEW_HEIGHT / 2 + size * (sprite.kind === "enemy" ? 0.5 : 0.48);
       const top = groundY - size;
       const image = sprite.kind === "enemy" ? drawEnemySprite(sprite, size) : drawPickupSprite(sprite, size);
@@ -498,70 +562,104 @@
     return [offscreen, spriteContext];
   }
 
+  function drawVolumeEllipse(s, x, y, radiusX, radiusY, light, middle, dark, rotation = 0) {
+    s.save();
+    s.translate(x, y);
+    s.rotate(rotation);
+    const gradient = s.createRadialGradient(-radiusX * 0.34, -radiusY * 0.42, 2, 0, 0, Math.max(radiusX, radiusY) * 1.15);
+    gradient.addColorStop(0, light);
+    gradient.addColorStop(0.48, middle);
+    gradient.addColorStop(1, dark);
+    s.fillStyle = gradient;
+    s.beginPath();
+    s.ellipse(0, 0, radiusX, radiusY, 0, 0, Math.PI * 2);
+    s.fill();
+    s.strokeStyle = "#080a08";
+    s.lineWidth = 3;
+    s.stroke();
+    s.restore();
+  }
+
+  function drawVolumeBox(s, x, y, width, height, light, middle, dark) {
+    const gradient = s.createLinearGradient(x, y, x + width, y);
+    gradient.addColorStop(0, dark);
+    gradient.addColorStop(0.3, middle);
+    gradient.addColorStop(0.58, light);
+    gradient.addColorStop(1, dark);
+    s.fillStyle = gradient;
+    s.fillRect(x, y, width, height);
+    s.fillStyle = light;
+    s.fillRect(x + 2, y + 2, Math.max(2, width - 5), 3);
+    s.fillStyle = dark;
+    s.fillRect(x + width - 4, y + 3, 4, height - 3);
+    s.strokeStyle = "#080a08";
+    s.lineWidth = 2;
+    s.strokeRect(x, y, width, height);
+  }
+
   function drawEnemySprite(enemy) {
     const [sprite, s] = spriteCanvas();
-    const data = enemyCatalog[enemy.type];
     const motion = Math.sin(enemy.phase) * 2;
     s.translate(48, 48);
-    s.fillStyle = "#000c";
-    s.beginPath(); s.ellipse(0, 41, 34, 6, 0, 0, Math.PI * 2); s.fill();
+    s.fillStyle = "#000d";
+    s.beginPath(); s.ellipse(0, 42, 37, 7, 0, 0, Math.PI * 2); s.fill();
+
     if (enemy.type === "fire") {
-      s.fillStyle = "#2b1912";
-      s.fillRect(-23, 31, 15, 12); s.fillRect(8, 31, 15, 12);
-      s.fillStyle = "#080705";
-      s.fillRect(-27, 39, 20, 6); s.fillRect(7, 39, 22, 6);
-      const flame = s.createLinearGradient(-26, 34, 22, -42);
-      flame.addColorStop(0, "#591d12"); flame.addColorStop(0.45, data.color); flame.addColorStop(1, "#7b2515");
+      drawVolumeBox(s, -24 + motion, 24, 15, 20, "#78351d", "#3d1d14", "#130b08");
+      drawVolumeBox(s, 9 - motion, 24, 15, 20, "#78351d", "#3d1d14", "#130b08");
+      const flame = s.createLinearGradient(-20, 34, 13, -45);
+      flame.addColorStop(0, "#40130d"); flame.addColorStop(0.48, "#b9361c"); flame.addColorStop(1, "#57170f");
       s.fillStyle = flame;
       s.beginPath();
-      s.moveTo(-29, 34); s.lineTo(-37, 4); s.lineTo(-21 + motion, -10);
-      s.lineTo(-13, -39); s.lineTo(1 + motion, -25); s.lineTo(12, -45);
-      s.lineTo(20, -15); s.lineTo(36, 3); s.lineTo(27, 34); s.closePath(); s.fill();
-      s.fillStyle = data.accent;
-      s.beginPath();
-      s.moveTo(-13, 27); s.lineTo(-16, 4); s.lineTo(1, -19); s.lineTo(16, 5); s.lineTo(12, 29); s.closePath(); s.fill();
-      s.fillStyle = "#1a0d08"; s.fillRect(-17, -2, 11, 8); s.fillRect(7, -2, 11, 8);
-      s.fillStyle = "#ff442d"; s.fillRect(-14, 0, 5, 3); s.fillRect(10, 0, 5, 3);
+      s.moveTo(-33, 31); s.lineTo(-38, 4); s.lineTo(-22 + motion, -10);
+      s.lineTo(-14, -42); s.lineTo(0 + motion, -27); s.lineTo(13, -47);
+      s.lineTo(21, -17); s.lineTo(37, 2); s.lineTo(29, 31); s.closePath(); s.fill();
+      s.strokeStyle = "#160907"; s.lineWidth = 3; s.stroke();
+      drawVolumeEllipse(s, -3, 8, 29, 28, "#ffe681", "#e76124", "#761b11");
+      drawVolumeEllipse(s, 1, 10, 15, 20, "#fff2a1", "#ffb52d", "#a92d16");
+      s.fillStyle = "#23100b"; s.fillRect(-17, -3, 11, 9); s.fillRect(7, -3, 11, 9);
+      s.fillStyle = "#ff3024"; s.fillRect(-14, 0, 5, 3); s.fillRect(10, 0, 5, 3);
+      s.fillStyle = "#2b0d09"; s.fillRect(-11, 17, 23, 5);
     } else if (enemy.type === "leopard") {
-      s.fillStyle = "#333b3a";
-      s.fillRect(-27 + motion, 20, 12, 23); s.fillRect(-4 - motion, 20, 12, 23); s.fillRect(17 + motion, 16, 12, 27);
-      s.fillStyle = "#111514";
-      s.fillRect(-30 + motion, 38, 17, 7); s.fillRect(-7 - motion, 38, 17, 7); s.fillRect(15 + motion, 38, 18, 7);
-      const fur = s.createLinearGradient(-32, 0, 31, 15);
-      fur.addColorStop(0, "#596463"); fur.addColorStop(0.52, data.color); fur.addColorStop(1, "#768180");
-      s.fillStyle = fur;
-      s.beginPath(); s.ellipse(-4, 6, 37, 25, -0.08, 0, Math.PI * 2); s.fill();
-      s.beginPath(); s.ellipse(25, -12, 22, 21, -0.15, 0, Math.PI * 2); s.fill();
-      s.fillStyle = "#737f7d";
-      s.beginPath(); s.moveTo(9, -24); s.lineTo(14, -39); s.lineTo(24, -27); s.closePath(); s.fill();
-      s.beginPath(); s.moveTo(29, -29); s.lineTo(39, -40); s.lineTo(44, -23); s.closePath(); s.fill();
-      s.lineWidth = 9; s.strokeStyle = "#596463"; s.beginPath(); s.arc(-35, -4, 27, 1.4, 4.8); s.stroke();
-      s.fillStyle = data.accent;
-      for (const [x, y] of [[-25,-4],[-10,7],[5,1],[-16,19],[14,15],[18,-15],[34,-15]]) {
-        s.fillRect(x, y, 6, 5);
-      }
-      s.fillStyle = "#ff4130"; s.fillRect(18, -18, 6, 4); s.fillRect(33, -18, 6, 4);
-      s.fillStyle = "#1a1c1b";
-      s.beginPath(); s.moveTo(20, -3); s.lineTo(43, -3); s.lineTo(34, 10); s.lineTo(25, 8); s.closePath(); s.fill();
-      s.fillStyle = "#ddd8bd";
-      s.beginPath(); s.moveTo(26, 5); s.lineTo(30, 14); s.lineTo(34, 5); s.closePath(); s.fill();
-      s.beginPath(); s.moveTo(35, 4); s.lineTo(39, 12); s.lineTo(42, 2); s.closePath(); s.fill();
+      const tail = s.createLinearGradient(-48, -4, -8, 10);
+      tail.addColorStop(0, "#232a29"); tail.addColorStop(0.45, "#9aa5a3"); tail.addColorStop(1, "#46504f");
+      s.strokeStyle = tail; s.lineWidth = 10; s.beginPath(); s.arc(-34, -4, 28, 1.4, 4.8); s.stroke();
+      drawVolumeBox(s, -28 + motion, 18, 13, 26, "#c8d0ce", "#697472", "#242b2a");
+      drawVolumeBox(s, -5 - motion, 19, 13, 25, "#c8d0ce", "#697472", "#242b2a");
+      drawVolumeBox(s, 17 + motion, 14, 14, 30, "#d6dcda", "#75807e", "#252c2b");
+      drawVolumeEllipse(s, -12, 5, 31, 25, "#e1e6e3", "#909b99", "#3e4947", -0.08);
+      drawVolumeEllipse(s, 13, 1, 25, 28, "#edf0ec", "#9aa5a2", "#424c4a", -0.1);
+      drawVolumeEllipse(s, 27, -17, 22, 21, "#edf1ed", "#9ca6a4", "#3e4746", -0.12);
+      s.fillStyle = "#727d7a";
+      s.beginPath(); s.moveTo(10, -27); s.lineTo(15, -43); s.lineTo(25, -29); s.closePath(); s.fill(); s.stroke();
+      s.beginPath(); s.moveTo(30, -31); s.lineTo(41, -43); s.lineTo(45, -25); s.closePath(); s.fill(); s.stroke();
+      drawVolumeEllipse(s, 36, -5, 17, 12, "#d9ddd7", "#747e7b", "#292f2e", 0.08);
+      s.fillStyle = "#46504e";
+      for (const [x, y, w, h] of [[-26,-5,7,6],[-11,8,7,6],[3,1,7,5],[-17,20,7,5],[12,15,7,6],[19,-18,6,5],[35,-18,6,5]]) s.fillRect(x, y, w, h);
+      s.fillStyle = "#ff3e30"; s.fillRect(18, -20, 6, 4); s.fillRect(34, -20, 6, 4);
+      s.fillStyle = "#111514"; s.beginPath(); s.ellipse(43, -6, 6, 5, 0, 0, Math.PI * 2); s.fill();
+      s.fillStyle = "#e6dfc4";
+      s.beginPath(); s.moveTo(27, 4); s.lineTo(31, 14); s.lineTo(35, 4); s.closePath(); s.fill();
+      s.beginPath(); s.moveTo(37, 3); s.lineTo(41, 12); s.lineTo(44, 1); s.closePath(); s.fill();
     } else {
-      s.fillStyle = "#171712";
-      s.fillRect(-21 + motion, 19, 15, 25); s.fillRect(6 - motion, 19, 15, 25);
-      s.fillStyle = "#080907"; s.fillRect(-25 + motion, 39, 21, 6); s.fillRect(4 - motion, 39, 23, 6);
-      const coat = s.createLinearGradient(-29, -4, 29, 30);
-      coat.addColorStop(0, "#3b201b"); coat.addColorStop(0.55, data.color); coat.addColorStop(1, "#2d1713");
-      s.fillStyle = coat;
-      s.beginPath(); s.moveTo(-33, 25); s.lineTo(-28, -10); s.lineTo(-17, -20); s.lineTo(17, -20); s.lineTo(31, -7); s.lineTo(34, 27); s.closePath(); s.fill();
-      s.fillStyle = "#6e4d35"; s.beginPath(); s.arc(0, -24, 17, 0, Math.PI * 2); s.fill();
-      s.fillStyle = "#202b1d"; s.beginPath(); s.ellipse(0, -34, 30, 8, 0, 0, Math.PI * 2); s.fill(); s.fillRect(-18, -43, 36, 11);
-      s.fillStyle = "#080908"; s.fillRect(-15, -28, 30, 8);
-      s.fillStyle = "#e02f29"; s.fillRect(-12, -26, 7, 3); s.fillRect(5, -26, 7, 3);
-      s.strokeStyle = "#17140e"; s.lineWidth = 8; s.beginPath(); s.moveTo(-30, 2); s.lineTo(27, 16); s.stroke();
-      s.strokeStyle = data.accent; s.lineWidth = 3; s.beginPath(); s.moveTo(-35, -3); s.lineTo(34, 14); s.stroke();
-      s.fillStyle = "#17140e"; s.fillRect(25, 10, 19, 8);
+      drawVolumeBox(s, -22 + motion, 18, 16, 27, "#5a3830", "#2c1c19", "#0d0c0a");
+      drawVolumeBox(s, 6 - motion, 18, 16, 27, "#5a3830", "#2c1c19", "#0d0c0a");
+      drawVolumeEllipse(s, -18, -1, 18, 21, "#9b5a42", "#63362c", "#271512");
+      drawVolumeEllipse(s, 18, -1, 18, 21, "#9b5a42", "#63362c", "#271512");
+      drawVolumeEllipse(s, 0, 8, 29, 31, "#a45f46", "#6e382d", "#291512");
+      drawVolumeEllipse(s, 0, -24, 18, 18, "#b98258", "#755039", "#291d17");
+      s.fillStyle = "#1d281b"; s.fillRect(-19, -44, 38, 13);
+      const hat = s.createLinearGradient(-30, -39, 30, -29);
+      hat.addColorStop(0, "#10150e"); hat.addColorStop(0.5, "#405137"); hat.addColorStop(1, "#151b13");
+      s.fillStyle = hat; s.beginPath(); s.ellipse(0, -33, 31, 9, 0, 0, Math.PI * 2); s.fill();
+      s.fillStyle = "#070807"; s.beginPath(); s.ellipse(0, -29, 24, 5, 0, 0, Math.PI * 2); s.fill();
+      s.fillStyle = "#090a08"; s.fillRect(-16, -27, 32, 8);
+      s.fillStyle = "#ef352e"; s.fillRect(-13, -25, 7, 3); s.fillRect(6, -25, 7, 3);
+      s.strokeStyle = "#17130e"; s.lineWidth = 9; s.beginPath(); s.moveTo(-31, 2); s.lineTo(27, 17); s.stroke();
+      s.strokeStyle = "#d0ad66"; s.lineWidth = 3; s.beginPath(); s.moveTo(-35, -2); s.lineTo(33, 16); s.stroke();
+      drawVolumeEllipse(s, 34, 17, 10, 7, "#75613b", "#332b1c", "#0c0b08", 0.24);
     }
+
     if (enemy.hitFlash > 0) {
       s.globalCompositeOperation = "source-atop";
       s.fillStyle = `rgba(255,255,255,${enemy.hitFlash * 0.8})`;
@@ -587,11 +685,56 @@
     return sprite;
   }
 
-  function renderWeapon(sway, bob) {
-    const recoil = muzzleFlash * 22;
+  function renderDarts() {
+    for (const dart of darts) {
+      const time = clamp(dart.age / dart.duration, 0, 1);
+      const travel = 1 - (1 - time) * (1 - time);
+      const x = dart.startX + (dart.endX - dart.startX) * travel;
+      const y = dart.startY + (dart.endY - dart.startY) * travel;
+      const angle = Math.atan2(dart.endY - dart.startY, dart.endX - dart.startX);
+      const length = 34 - travel * 24;
+      const width = 7 - travel * 4;
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(angle);
+      ctx.fillStyle = "#18230f";
+      ctx.fillRect(-length, -width / 2 - 1, length + 5, width + 2);
+      ctx.fillStyle = "#86a74b";
+      ctx.fillRect(-length + 2, -width / 2, length, width);
+      ctx.fillStyle = "#d6df80";
+      ctx.fillRect(-length + 4, -width / 2, Math.max(3, length * 0.42), Math.max(1, width * 0.34));
+      ctx.fillStyle = "#d7c69a";
+      ctx.beginPath();
+      ctx.moveTo(6, 0); ctx.lineTo(0, -width); ctx.lineTo(0, width); ctx.closePath(); ctx.fill();
+      ctx.restore();
+    }
+  }
+
+  function weaponPose(sway, bob) {
     const gait = Math.sin(player.walkPhase * 0.5) * 13 * player.moveAmount;
+    const originX = WIDTH / 2 + sway * 1.25 + gait;
+    const originY = VIEW_HEIGHT - 2 + muzzleFlash * 22 + bob * 0.65;
+    const targetX = 3 + (aim.x - WIDTH / 2) * 0.16;
+    const targetY = -88 + (aim.y - VIEW_HEIGHT / 2) * 0.18;
+    const rotation = clamp(Math.atan2(targetY, targetX) - Math.atan2(-88, 3), -0.34, 0.34);
+    const cos = Math.cos(rotation);
+    const sin = Math.sin(rotation);
+    return {
+      gait,
+      originX,
+      originY,
+      rotation,
+      muzzleX: originX + 3 * cos + 88 * sin,
+      muzzleY: originY + 3 * sin - 88 * cos,
+    };
+  }
+
+  function renderWeapon(sway, bob) {
+    const pose = weaponPose(sway, bob);
+    const gait = pose.gait;
     ctx.save();
-    ctx.translate(WIDTH / 2 + sway * 1.25 + gait, VIEW_HEIGHT - 2 + recoil + bob * 0.65);
+    ctx.translate(pose.originX, pose.originY);
+    ctx.rotate(pose.rotation);
 
     ctx.fillStyle = "#090a08";
     ctx.beginPath(); ctx.ellipse(-58 - gait * 0.2, 50, 77, 47, -0.15, 0, Math.PI * 2); ctx.fill();
@@ -682,6 +825,13 @@
     ctx.beginPath(); ctx.arc(x - 32, y - 22, 18, 0, Math.PI * 2); ctx.arc(x + 32, y - 22, 18, 0, Math.PI * 2); ctx.fill();
     ctx.fillStyle = "#e7e3d1";
     ctx.beginPath(); ctx.ellipse(x, y - 2, 45, 38, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "#97221d";
+    ctx.save(); ctx.translate(x, y - 27); ctx.rotate(-0.05); ctx.fillRect(-43, -5, 86, 11); ctx.restore();
+    ctx.fillStyle = "#4f0e0d";
+    ctx.beginPath(); ctx.arc(x + 40, y - 25, 7, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "#8d1b18";
+    ctx.beginPath(); ctx.moveTo(x + 42, y - 24); ctx.lineTo(x + 59, y - 17); ctx.lineTo(x + 48, y - 10); ctx.closePath(); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(x + 40, y - 24); ctx.lineTo(x + 55, y - 30); ctx.lineTo(x + 51, y - 19); ctx.closePath(); ctx.fill();
     ctx.fillStyle = "#171916";
     ctx.save(); ctx.translate(x - 18, y - 10); ctx.rotate(0.45); ctx.beginPath(); ctx.ellipse(0, 0, 12, 17, 0, 0, Math.PI * 2); ctx.fill(); ctx.restore();
     ctx.save(); ctx.translate(x + 18, y - 10); ctx.rotate(-0.45); ctx.beginPath(); ctx.ellipse(0, 0, 12, 17, 0, 0, Math.PI * 2); ctx.fill(); ctx.restore();
@@ -689,8 +839,20 @@
     if (hurt) {
       ctx.fillRect(x - 23, y - 13, 10, 4); ctx.fillRect(x + 13, y - 13, 10, 4);
     } else {
-      ctx.beginPath(); ctx.arc(x - 18, y - 11, 4, 0, Math.PI * 2); ctx.arc(x + 18, y - 11, 4, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(x - 18, y - 11, 4, 0, Math.PI * 2); ctx.fill();
+      ctx.fillRect(x + 13, y - 12, 10, 3);
     }
+    ctx.fillStyle = "rgba(91,42,65,0.72)";
+    ctx.beginPath(); ctx.ellipse(x - 27, y + 13, 10, 7, -0.25, 0, Math.PI * 2); ctx.fill();
+    ctx.save();
+    ctx.translate(x + 26, y + 13);
+    ctx.rotate(-0.35);
+    ctx.fillStyle = "#d5caa5"; ctx.fillRect(-12, -5, 24, 10);
+    ctx.strokeStyle = "#8d836c"; ctx.lineWidth = 2; ctx.strokeRect(-12, -5, 24, 10);
+    ctx.fillStyle = "#9e9378"; ctx.fillRect(-5, -4, 2, 8); ctx.fillRect(4, -4, 2, 8);
+    ctx.restore();
+    ctx.strokeStyle = "#6f241f"; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(x - 38, y - 1); ctx.lineTo(x - 29, y + 4); ctx.moveTo(x - 40, y + 4); ctx.lineTo(x - 31, y + 9); ctx.stroke();
     ctx.fillStyle = "#171916";
     ctx.beginPath(); ctx.ellipse(x, y + 5, 8, 6, 0, 0, Math.PI * 2); ctx.fill();
     ctx.strokeStyle = "#171916"; ctx.lineWidth = 3; ctx.beginPath();
@@ -758,7 +920,11 @@
   });
   document.addEventListener("mousemove", (event) => {
     if (state === "playing" && document.pointerLockElement === canvas) {
-      player.angle = normalizeAngle(player.angle + event.movementX * 0.0024);
+      const nextX = aim.x + event.movementX * 0.9;
+      setAim(nextX, aim.y + event.movementY * 0.9);
+      if (nextX < AIM_BOUNDS.left || nextX > AIM_BOUNDS.right) {
+        player.angle = normalizeAngle(player.angle + event.movementX * 0.0024);
+      }
     }
   });
   canvas.addEventListener("click", () => {
@@ -805,9 +971,17 @@
   requestAnimationFrame(frame);
 
   window.__PANDADOOM__ = {
-    getState: () => ({ state, player: { ...player }, enemiesAlive: enemies.filter((enemy) => enemy.alive).length }),
+    getState: () => ({
+      state,
+      player: { ...player },
+      aim: { ...aim },
+      dartsInFlight: darts.length,
+      enemiesAlive: enemies.filter((enemy) => enemy.alive).length,
+      enemies: enemies.map(({ type, x, y, hp, alive }) => ({ type, x, y, hp, alive })),
+    }),
     start: startGame,
     shoot,
+    aimAt: setAim,
     map: MAP.slice(),
   };
 }());

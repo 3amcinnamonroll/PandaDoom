@@ -208,9 +208,15 @@
       const speed = 2.15 * dt;
       const dx = (Math.cos(player.angle) * forward + Math.cos(player.angle + Math.PI / 2) * strafe) * speed;
       const dy = (Math.sin(player.angle) * forward + Math.sin(player.angle + Math.PI / 2) * strafe) * speed;
+      const oldX = player.x;
+      const oldY = player.y;
       moveEntity(player, dx, dy);
-      player.walkPhase += dt * 10;
-      player.moveAmount = Math.min(1, player.moveAmount + dt * 7);
+      if (Math.hypot(player.x - oldX, player.y - oldY) > 0.0001) {
+        player.walkPhase += dt * 10;
+        player.moveAmount = Math.min(1, player.moveAmount + dt * 7);
+      } else {
+        player.moveAmount = Math.max(0, player.moveAmount - dt * 5);
+      }
     } else {
       player.moveAmount = Math.max(0, player.moveAmount - dt * 5);
     }
@@ -323,8 +329,10 @@
     const bob = (Math.abs(Math.sin(player.walkPhase)) - 0.45) * 6 * stride;
     const shakeX = shake ? (Math.random() - 0.5) * shake : 0;
     const shakeY = shake ? (Math.random() - 0.5) * shake : 0;
+    ctx.fillStyle = "#000";
+    ctx.fillRect(0, 0, WIDTH, HEIGHT);
     ctx.save();
-    ctx.translate(shakeX + sway, shakeY + bob);
+    ctx.translate(shakeX, shakeY);
     renderWorld();
     renderSprites();
     renderWeapon(sway, bob);
@@ -460,11 +468,17 @@
       const top = groundY - size;
       const image = sprite.kind === "enemy" ? drawEnemySprite(sprite, size) : drawPickupSprite(sprite, size);
       const left = Math.floor(screenX - size / 2);
-      if (sprite.kind === "enemy" && screenX >= 0 && screenX < WIDTH && spriteDepth < depthBuffer[Math.floor(screenX)]) {
+      if (sprite.kind === "enemy") {
+        const shadowRadiusX = size * 0.34;
+        const shadowRadiusY = size * 0.085;
+        const shadowCenterY = groundY - size * 0.035;
         ctx.fillStyle = `rgba(0,0,0,${Math.min(0.68, 0.35 + 0.04 * distance)})`;
-        ctx.beginPath();
-        ctx.ellipse(screenX, groundY - size * 0.035, size * 0.34, size * 0.085, 0, 0, Math.PI * 2);
-        ctx.fill();
+        for (let shadowX = Math.floor(screenX - shadowRadiusX); shadowX <= screenX + shadowRadiusX; shadowX += 3) {
+          if (shadowX < 0 || shadowX >= WIDTH || spriteDepth >= depthBuffer[shadowX]) continue;
+          const normalizedX = (shadowX - screenX) / shadowRadiusX;
+          const halfHeight = shadowRadiusY * Math.sqrt(Math.max(0, 1 - normalizedX * normalizedX));
+          ctx.fillRect(shadowX, shadowCenterY - halfHeight, 3, halfHeight * 2);
+        }
       }
       for (let sx = 0; sx < Math.ceil(size); sx += 3) {
         const screenColumn = left + sx;

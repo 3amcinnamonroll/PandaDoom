@@ -473,11 +473,11 @@
         const shadowRadiusY = size * 0.085;
         const shadowCenterY = groundY - size * 0.035;
         ctx.fillStyle = `rgba(0,0,0,${Math.min(0.68, 0.35 + 0.04 * distance)})`;
-        for (let shadowX = Math.floor(screenX - shadowRadiusX); shadowX <= screenX + shadowRadiusX; shadowX += 3) {
+        for (let shadowX = Math.floor(screenX - shadowRadiusX); shadowX <= screenX + shadowRadiusX; shadowX += 1) {
           if (shadowX < 0 || shadowX >= WIDTH || spriteDepth >= depthBuffer[shadowX]) continue;
           const normalizedX = (shadowX - screenX) / shadowRadiusX;
           const halfHeight = shadowRadiusY * Math.sqrt(Math.max(0, 1 - normalizedX * normalizedX));
-          ctx.fillRect(shadowX, shadowCenterY - halfHeight, 3, halfHeight * 2);
+          ctx.fillRect(shadowX, shadowCenterY - halfHeight, 1, halfHeight * 2);
         }
       }
       for (let sx = 0; sx < Math.ceil(size); sx += 3) {

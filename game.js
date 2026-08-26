@@ -1080,31 +1080,53 @@
 
     for (const item of visible) {
       const { projectile, depth, x, y } = item;
-      const centerX = clamp(Math.round(x), 0, WIDTH - 1);
-      const centerY = clamp(Math.round(y), 0, VIEW_HEIGHT - 1);
-      if (depth >= enemyDepthBuffer[centerY * WIDTH + centerX]) continue;
       const baseSize = projectile.type === "fireball" ? 0.2 : 0.09;
       const size = clamp((baseSize * VIEW_HEIGHT) / depth, projectile.type === "fireball" ? 5 : 3, projectile.type === "fireball" ? 42 : 18);
-      ctx.save();
-      ctx.translate(Math.round(x), Math.round(y));
-      if (projectile.type === "fireball") {
-        ctx.fillStyle = "rgba(131,22,8,0.5)";
-        ctx.fillRect(-size * 0.85, -size * 0.85, size * 1.7, size * 1.7);
-        ctx.fillStyle = "#e74419";
-        ctx.rotate(projectile.age * 5);
-        ctx.fillRect(-size * 0.62, -size * 0.62, size * 1.24, size * 1.24);
-        ctx.fillStyle = "#ffbd35";
-        ctx.fillRect(-size * 0.3, -size * 0.3, size * 0.6, size * 0.6);
-      } else {
-        const screenAngle = Math.atan2(projectile.vy, projectile.vx) - player.angle;
-        ctx.rotate(screenAngle);
-        ctx.fillStyle = "rgba(255,54,30,0.38)";
-        ctx.fillRect(-size * 3.4, -size, size * 4.2, size * 2);
-        ctx.fillStyle = "#ffcb58";
-        ctx.fillRect(-size * 0.6, -size * 0.5, size * 1.2, size);
-      }
-      ctx.restore();
+      renderDepthTestedProjectile(projectile, depth, x, y, size);
     }
+  }
+
+  function renderDepthTestedProjectile(projectile, depth, centerX, centerY, size) {
+    const fireball = projectile.type === "fireball";
+    const screenAngle = fireball ? projectile.age * 5 : Math.atan2(projectile.vy, projectile.vx) - player.angle;
+    const cosine = Math.cos(screenAngle);
+    const sine = Math.sin(screenAngle);
+    const radius = size * (fireball ? 0.9 : 3.6);
+    const originX = clamp(Math.floor(centerX - radius), 0, WIDTH - 1);
+    const originY = clamp(Math.floor(centerY - radius), 0, VIEW_HEIGHT - 1);
+    const endX = clamp(Math.ceil(centerX + radius), 0, WIDTH - 1);
+    const endY = clamp(Math.ceil(centerY + radius), 0, VIEW_HEIGHT - 1);
+    const width = endX - originX + 1;
+    const height = endY - originY + 1;
+    if (width <= 0 || height <= 0) return;
+    const image = meshContext.createImageData(width, height);
+    for (let globalY = originY; globalY <= endY; globalY += 1) {
+      for (let globalX = originX; globalX <= endX; globalX += 1) {
+        if (depth >= depthBuffer[globalX] - 0.015 || depth >= enemyDepthBuffer[globalY * WIDTH + globalX]) continue;
+        const dx = globalX + 0.5 - centerX;
+        const dy = globalY + 0.5 - centerY;
+        const localX = dx * cosine + dy * sine;
+        const localY = -dx * sine + dy * cosine;
+        let color = null;
+        if (fireball) {
+          if (Math.abs(dx) <= size * 0.85 && Math.abs(dy) <= size * 0.85) color = [131, 22, 8, 128];
+          if (Math.abs(localX) <= size * 0.62 && Math.abs(localY) <= size * 0.62) color = [231, 68, 25, 255];
+          if (Math.abs(localX) <= size * 0.3 && Math.abs(localY) <= size * 0.3) color = [255, 189, 53, 255];
+        } else {
+          if (localX >= -size * 3.4 && localX <= size * 0.8 && Math.abs(localY) <= size) color = [255, 54, 30, 96];
+          if (Math.abs(localX) <= size * 0.6 && Math.abs(localY) <= size * 0.5) color = [255, 203, 88, 255];
+        }
+        if (!color) continue;
+        const pixel = ((globalY - originY) * width + globalX - originX) * 4;
+        image.data[pixel] = color[0];
+        image.data[pixel + 1] = color[1];
+        image.data[pixel + 2] = color[2];
+        image.data[pixel + 3] = color[3];
+      }
+    }
+    meshContext.clearRect(originX, originY, width, height);
+    meshContext.putImageData(image, originX, originY);
+    ctx.drawImage(meshSurface, originX, originY, width, height, originX, originY, width, height);
   }
 
   function weaponPose(sway, bob) {

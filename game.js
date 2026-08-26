@@ -45,7 +45,16 @@
   const FOV = Math.PI / 3;
   const MAX_DEPTH = 22;
   const PLAYER_RADIUS = 0.2;
+  const PROJECTION_PLANE = WIDTH / (2 * Math.tan(FOV / 2));
+  const CAMERA_HEIGHT = 0.5;
+  const MESH_NEAR = 0.08;
+  const MESH_PIXEL = 2;
   const AIM_BOUNDS = { top: VIEW_HEIGHT * 0.16, bottom: VIEW_HEIGHT * 0.84 };
+  const MODEL_BOUNDS = {
+    poacher: { width: 0.92, height: 1.24 },
+    leopard: { width: 1.05, height: 1.08 },
+    fire: { width: 0.9, height: 1.32 },
+  };
   const keys = Object.create(null);
   const touch = Object.create(null);
   let state = "title";
@@ -56,10 +65,12 @@
   let messageTimer = 3;
   let exitPulse = 0;
   let depthBuffer = new Float32Array(WIDTH);
+  let meshDebug = { models: 0, triangles: 0, visibleTriangles: 0, pixels: 0 };
   const aim = { x: WIDTH / 2, y: VIEW_HEIGHT / 2 };
   let pointerWasLocked = false;
   let mouseCaptureUnavailable = false;
   let pendingCaptureClick = false;
+  let inspectionMode = false;
 
   const enemyCatalog = {
     poacher: { name: "POACHER", color: "#793c2c", accent: "#e0bd73", hp: 2, speed: 0.68, damage: 9 },
@@ -85,6 +96,7 @@
   let darts = [];
 
   function resetGame() {
+    inspectionMode = false;
     Object.assign(player, {
       x: 1.65,
       y: 1.65,
@@ -128,6 +140,7 @@
       attackCooldown: Math.random() * 0.6,
       hitFlash: 0,
       phase: Math.random() * Math.PI * 2,
+      facing: Math.atan2(player.y - y, player.x - x),
     };
   }
 
@@ -154,6 +167,11 @@
     while (angle > Math.PI) angle -= Math.PI * 2;
     while (angle < -Math.PI) angle += Math.PI * 2;
     return angle;
+  }
+
+  function turnToward(angle, target, maximumStep) {
+    const difference = normalizeAngle(target - angle);
+    return normalizeAngle(angle + clamp(difference, -maximumStep, maximumStep));
   }
 
   function clamp(value, minimum, maximum) {
@@ -271,9 +289,11 @@
       enemy.hitFlash = Math.max(0, enemy.hitFlash - dt * 5);
       enemy.attackCooldown = Math.max(0, enemy.attackCooldown - dt);
       enemy.phase += dt * 4;
+      if (inspectionMode) continue;
       const dx = player.x - enemy.x;
       const dy = player.y - enemy.y;
       const distance = Math.hypot(dx, dy);
+      enemy.facing = turnToward(enemy.facing, Math.atan2(dy, dx), dt * 1.8);
       if (distance < 7.5 && distance > 0.68 && hasLineOfSight(enemy.x, enemy.y, player.x, player.y)) {
         const speed = enemyCatalog[enemy.type].speed * dt;
         moveEntity(enemy, (dx / distance) * speed, (dy / distance) * speed, 0.22);
@@ -292,10 +312,12 @@
     const angle = normalizeAngle(Math.atan2(dy, dx) - camera.angle);
     if (Math.abs(angle) > FOV * 0.78 || distance < 0.25) return null;
     const depth = distance * Math.cos(angle);
-    const screenX = WIDTH / 2 + Math.tan(angle) * (WIDTH / (2 * Math.tan(FOV / 2)));
-    const size = Math.min(520, 360 / Math.max(depth, 0.25));
-    const groundY = VIEW_HEIGHT / 2 + size * 0.5;
-    return { distance, depth, screenX, size, groundY, top: groundY - size };
+    const bounds = MODEL_BOUNDS[enemy.type];
+    const screenX = WIDTH / 2 + Math.tan(angle) * PROJECTION_PLANE;
+    const size = Math.min(VIEW_HEIGHT * 1.8, (bounds.height * VIEW_HEIGHT) / Math.max(depth, 0.25));
+    const halfWidth = Math.min(WIDTH, (bounds.width * PROJECTION_PLANE) / (2 * Math.max(depth, 0.25)));
+    const groundY = VIEW_HEIGHT / 2 + (CAMERA_HEIGHT * VIEW_HEIGHT) / Math.max(depth, 0.25);
+    return { distance, depth, screenX, size, halfWidth, groundY, top: groundY - size };
   }
 
   function wallDepthAtScreenX(screenX, camera = player) {
@@ -308,7 +330,7 @@
     if (!dart.target?.alive) return null;
     const projection = projectEnemy(dart.target, dart.camera);
     if (!projection) return null;
-    const withinX = Math.abs(dart.endX - projection.screenX) < projection.size * 0.42;
+    const withinX = Math.abs(dart.endX - projection.screenX) < projection.halfWidth * 0.9;
     const withinY = dart.endY > projection.top + projection.size * 0.05 && dart.endY < projection.groundY - projection.size * 0.04;
     const unobstructed = projection.depth < wallDepthAtScreenX(dart.endX, dart.camera) + 0.08;
     return withinX && withinY && unobstructed && hasLineOfSight(dart.camera.x, dart.camera.y, dart.target.x, dart.target.y) ? dart.target : null;
@@ -354,7 +376,7 @@
       if (!enemy.alive) continue;
       const projection = projectEnemy(enemy);
       if (!projection) continue;
-      const withinX = Math.abs(aim.x - projection.screenX) < projection.size * 0.42;
+      const withinX = Math.abs(aim.x - projection.screenX) < projection.halfWidth * 0.9;
       const withinY = aim.y > projection.top + projection.size * 0.05 && aim.y < projection.groundY - projection.size * 0.04;
       const visibleAtAim = projection.depth < wallDepthAtScreenX(aim.x) + 0.08;
       if (withinX && withinY && visibleAtAim && projection.distance < targetDistance && hasLineOfSight(player.x, player.y, enemy.x, enemy.y)) {
@@ -537,38 +559,47 @@
       if (pickup.active) sprites.push({ ...pickup, kind: "pickup" });
     }
     sprites.sort((a, b) => Math.hypot(b.x - player.x, b.y - player.y) - Math.hypot(a.x - player.x, a.y - player.y));
+    meshDebug = { models: 0, triangles: 0, visibleTriangles: 0, pixels: 0 };
 
     for (const sprite of sprites) {
       const dx = sprite.x - player.x;
       const dy = sprite.y - player.y;
       const distance = Math.hypot(dx, dy);
       const angle = normalizeAngle(Math.atan2(dy, dx) - player.angle);
-      const enemyProjection = sprite.kind === "enemy" ? projectEnemy(sprite) : null;
-      if ((sprite.kind === "enemy" && !enemyProjection) || (sprite.kind !== "enemy" && (Math.abs(angle) > FOV * 0.78 || distance < 0.25))) continue;
-      const spriteDepth = enemyProjection?.depth ?? distance * Math.cos(angle);
-      const screenX = enemyProjection?.screenX ?? WIDTH / 2 + Math.tan(angle) * (WIDTH / (2 * Math.tan(FOV / 2)));
-      const size = enemyProjection?.size ?? Math.min(520, 170 / Math.max(spriteDepth, 0.25));
-      const groundY = VIEW_HEIGHT / 2 + size * (sprite.kind === "enemy" ? 0.5 : 0.48);
-      const top = groundY - size;
-      const image = sprite.kind === "enemy" ? drawEnemySprite(sprite, size) : drawPickupSprite(sprite, size);
-      const left = Math.floor(screenX - size / 2);
       if (sprite.kind === "enemy") {
-        const shadowRadiusX = size * 0.34;
-        const shadowRadiusY = size * 0.085;
-        const shadowCenterY = groundY - size * 0.035;
-        ctx.fillStyle = `rgba(0,0,0,${Math.min(0.68, 0.35 + 0.04 * distance)})`;
-        for (let shadowX = Math.floor(screenX - shadowRadiusX); shadowX <= screenX + shadowRadiusX; shadowX += 1) {
-          if (shadowX < 0 || shadowX >= WIDTH || spriteDepth >= depthBuffer[shadowX]) continue;
-          const normalizedX = (shadowX - screenX) / shadowRadiusX;
-          const halfHeight = shadowRadiusY * Math.sqrt(Math.max(0, 1 - normalizedX * normalizedX));
-          ctx.fillRect(shadowX, shadowCenterY - halfHeight, 1, halfHeight * 2);
-        }
+        const projection = projectEnemy(sprite);
+        if (!projection) continue;
+        renderEnemyShadow(projection, distance);
+        renderEnemyMesh(sprite);
+        continue;
       }
+
+      if (Math.abs(angle) > FOV * 0.78 || distance < 0.25) continue;
+      const spriteDepth = distance * Math.cos(angle);
+      const screenX = WIDTH / 2 + Math.tan(angle) * PROJECTION_PLANE;
+      const size = Math.min(520, 170 / Math.max(spriteDepth, 0.25));
+      const groundY = VIEW_HEIGHT / 2 + size * 0.48;
+      const top = groundY - size;
+      const image = drawPickupSprite(sprite, size);
+      const left = Math.floor(screenX - size / 2);
       for (let sx = 0; sx < Math.ceil(size); sx += 3) {
         const screenColumn = left + sx;
         if (screenColumn < 0 || screenColumn >= WIDTH || spriteDepth >= depthBuffer[screenColumn]) continue;
         ctx.drawImage(image, (sx / size) * image.width, 0, Math.max(1, (3 / size) * image.width), image.height, screenColumn, top, 3, size);
       }
+    }
+  }
+
+  function renderEnemyShadow(projection, distance) {
+    const shadowRadiusX = projection.halfWidth * 0.88;
+    const shadowRadiusY = Math.max(2, projection.halfWidth * 0.18);
+    const shadowCenterY = projection.groundY - shadowRadiusY * 0.35;
+    ctx.fillStyle = `rgba(0,0,0,${Math.min(0.72, 0.38 + 0.04 * distance)})`;
+    for (let x = Math.floor(projection.screenX - shadowRadiusX); x <= projection.screenX + shadowRadiusX; x += 1) {
+      if (x < 0 || x >= WIDTH || projection.depth >= depthBuffer[x]) continue;
+      const normalizedX = (x - projection.screenX) / shadowRadiusX;
+      const halfHeight = shadowRadiusY * Math.sqrt(Math.max(0, 1 - normalizedX * normalizedX));
+      ctx.fillRect(x, shadowCenterY - halfHeight, 1, halfHeight * 2);
     }
   }
 
@@ -582,110 +613,277 @@
     return [offscreen, spriteContext];
   }
 
-  function drawVolumeEllipse(s, x, y, radiusX, radiusY, light, middle, dark, rotation = 0) {
-    s.save();
-    s.translate(x, y);
-    s.rotate(rotation);
-    const gradient = s.createRadialGradient(-radiusX * 0.34, -radiusY * 0.42, 2, 0, 0, Math.max(radiusX, radiusY) * 1.15);
-    gradient.addColorStop(0, light);
-    gradient.addColorStop(0.48, middle);
-    gradient.addColorStop(1, dark);
-    s.fillStyle = gradient;
-    s.beginPath();
-    s.ellipse(0, 0, radiusX, radiusY, 0, 0, Math.PI * 2);
-    s.fill();
-    s.strokeStyle = "#080a08";
-    s.lineWidth = 3;
-    s.stroke();
-    s.restore();
+  const meshSurface = document.createElement("canvas");
+  meshSurface.width = WIDTH;
+  meshSurface.height = VIEW_HEIGHT;
+  const meshContext = meshSurface.getContext("2d");
+  meshContext.imageSmoothingEnabled = false;
+
+  function rotateModelPoint(point, yaw) {
+    const cosine = Math.cos(yaw);
+    const sine = Math.sin(yaw);
+    return {
+      x: point.x * cosine - point.y * sine,
+      y: point.x * sine + point.y * cosine,
+      z: point.z,
+    };
   }
 
-  function drawVolumeBox(s, x, y, width, height, light, middle, dark) {
-    const gradient = s.createLinearGradient(x, y, x + width, y);
-    gradient.addColorStop(0, dark);
-    gradient.addColorStop(0.3, middle);
-    gradient.addColorStop(0.58, light);
-    gradient.addColorStop(1, dark);
-    s.fillStyle = gradient;
-    s.fillRect(x, y, width, height);
-    s.fillStyle = light;
-    s.fillRect(x + 2, y + 2, Math.max(2, width - 5), 3);
-    s.fillStyle = dark;
-    s.fillRect(x + width - 4, y + 3, 4, height - 3);
-    s.strokeStyle = "#080a08";
-    s.lineWidth = 2;
-    s.strokeRect(x, y, width, height);
+  function addTriangle(mesh, a, b, c, color) {
+    mesh.push({ vertices: [a, b, c], color });
   }
 
-  function drawEnemySprite(enemy) {
-    const [sprite, s] = spriteCanvas();
-    const motion = Math.sin(enemy.phase) * 2;
-    s.translate(48, 48);
-    s.fillStyle = "#000d";
-    s.beginPath(); s.ellipse(0, 42, 37, 7, 0, 0, Math.PI * 2); s.fill();
+  function addBox(mesh, x, y, z, width, depth, height, color, yaw = 0) {
+    const halfWidth = width / 2;
+    const halfDepth = depth / 2;
+    const halfHeight = height / 2;
+    const points = [
+      { x: -halfWidth, y: -halfDepth, z: -halfHeight }, { x: halfWidth, y: -halfDepth, z: -halfHeight },
+      { x: halfWidth, y: halfDepth, z: -halfHeight }, { x: -halfWidth, y: halfDepth, z: -halfHeight },
+      { x: -halfWidth, y: -halfDepth, z: halfHeight }, { x: halfWidth, y: -halfDepth, z: halfHeight },
+      { x: halfWidth, y: halfDepth, z: halfHeight }, { x: -halfWidth, y: halfDepth, z: halfHeight },
+    ].map((point) => {
+      const rotated = rotateModelPoint(point, yaw);
+      return { x: rotated.x + x, y: rotated.y + y, z: rotated.z + z };
+    });
+    const faces = [[0,2,1],[0,3,2],[4,5,6],[4,6,7],[0,1,5],[0,5,4],[3,7,6],[3,6,2],[0,4,7],[0,7,3],[1,2,6],[1,6,5]];
+    for (const [a, b, c] of faces) addTriangle(mesh, points[a], points[b], points[c], color);
+  }
 
-    if (enemy.type === "fire") {
-      drawVolumeBox(s, -24 + motion, 24, 15, 20, "#78351d", "#3d1d14", "#130b08");
-      drawVolumeBox(s, 9 - motion, 24, 15, 20, "#78351d", "#3d1d14", "#130b08");
-      const flame = s.createLinearGradient(-20, 34, 13, -45);
-      flame.addColorStop(0, "#40130d"); flame.addColorStop(0.48, "#b9361c"); flame.addColorStop(1, "#57170f");
-      s.fillStyle = flame;
-      s.beginPath();
-      s.moveTo(-33, 31); s.lineTo(-38, 4); s.lineTo(-22 + motion, -10);
-      s.lineTo(-14, -42); s.lineTo(0 + motion, -27); s.lineTo(13, -47);
-      s.lineTo(21, -17); s.lineTo(37, 2); s.lineTo(29, 31); s.closePath(); s.fill();
-      s.strokeStyle = "#160907"; s.lineWidth = 3; s.stroke();
-      drawVolumeEllipse(s, -3, 8, 29, 28, "#ffe681", "#e76124", "#761b11");
-      drawVolumeEllipse(s, 1, 10, 15, 20, "#fff2a1", "#ffb52d", "#a92d16");
-      s.fillStyle = "#23100b"; s.fillRect(-17, -3, 11, 9); s.fillRect(7, -3, 11, 9);
-      s.fillStyle = "#ff3024"; s.fillRect(-14, 0, 5, 3); s.fillRect(10, 0, 5, 3);
-      s.fillStyle = "#2b0d09"; s.fillRect(-11, 17, 23, 5);
+  function addPyramid(mesh, x, y, z, width, depth, height, color, yaw = 0) {
+    const halfWidth = width / 2;
+    const halfDepth = depth / 2;
+    const points = [
+      { x: -halfWidth, y: -halfDepth, z: 0 }, { x: halfWidth, y: -halfDepth, z: 0 },
+      { x: halfWidth, y: halfDepth, z: 0 }, { x: -halfWidth, y: halfDepth, z: 0 },
+      { x: 0, y: 0, z: height },
+    ].map((point) => {
+      const rotated = rotateModelPoint(point, yaw);
+      return { x: rotated.x + x, y: rotated.y + y, z: rotated.z + z };
+    });
+    const faces = [[0,2,1],[0,3,2],[0,1,4],[1,2,4],[2,3,4],[3,0,4]];
+    for (const [a, b, c] of faces) addTriangle(mesh, points[a], points[b], points[c], color);
+  }
+
+  function buildEnemyMesh(enemy) {
+    const mesh = [];
+    const stride = Math.sin(enemy.phase) * 0.045;
+    if (enemy.type === "poacher") {
+      addBox(mesh, -0.15, 0, 0.2 + Math.max(0, stride), 0.2, 0.24, 0.4, "#3b2722");
+      addBox(mesh, 0.15, 0, 0.2 + Math.max(0, -stride), 0.2, 0.24, 0.4, "#3b2722");
+      addBox(mesh, 0, 0, 0.58, 0.55, 0.32, 0.5, "#713e32");
+      addBox(mesh, -0.36, 0.02, 0.6, 0.16, 0.2, 0.46, "#7e4938", -0.08);
+      addBox(mesh, 0.36, 0.04, 0.6, 0.16, 0.2, 0.46, "#7e4938", 0.08);
+      addBox(mesh, 0, 0.03, 0.96, 0.34, 0.31, 0.3, "#9f6547");
+      addBox(mesh, 0, 0.02, 1.08, 0.56, 0.44, 0.07, "#1c2b1a");
+      addBox(mesh, 0, 0, 1.16, 0.38, 0.32, 0.16, "#31442c");
+      addBox(mesh, -0.08, 0.195, 1.0, 0.07, 0.035, 0.055, "#ff332a");
+      addBox(mesh, 0.08, 0.195, 1.0, 0.07, 0.035, 0.055, "#ff332a");
+      addBox(mesh, 0.03, 0.24, 0.65, 0.62, 0.13, 0.13, "#6d542f", -0.08);
+      addBox(mesh, 0.18, 0.55, 0.67, 0.08, 0.62, 0.08, "#171b13");
     } else if (enemy.type === "leopard") {
-      const tail = s.createLinearGradient(-48, -4, -8, 10);
-      tail.addColorStop(0, "#232a29"); tail.addColorStop(0.45, "#9aa5a3"); tail.addColorStop(1, "#46504f");
-      s.strokeStyle = tail; s.lineWidth = 10; s.beginPath(); s.arc(-34, -4, 28, 1.4, 4.8); s.stroke();
-      drawVolumeBox(s, -28 + motion, 18, 13, 26, "#c8d0ce", "#697472", "#242b2a");
-      drawVolumeBox(s, -5 - motion, 19, 13, 25, "#c8d0ce", "#697472", "#242b2a");
-      drawVolumeBox(s, 17 + motion, 14, 14, 30, "#d6dcda", "#75807e", "#252c2b");
-      drawVolumeEllipse(s, -12, 5, 31, 25, "#e1e6e3", "#909b99", "#3e4947", -0.08);
-      drawVolumeEllipse(s, 13, 1, 25, 28, "#edf0ec", "#9aa5a2", "#424c4a", -0.1);
-      drawVolumeEllipse(s, 24, -17, 20, 20, "#edf1ed", "#9ca6a4", "#3e4746", -0.12);
-      s.fillStyle = "#727d7a";
-      s.beginPath(); s.moveTo(10, -27); s.lineTo(15, -43); s.lineTo(25, -29); s.closePath(); s.fill(); s.stroke();
-      s.beginPath(); s.moveTo(28, -31); s.lineTo(38, -42); s.lineTo(42, -25); s.closePath(); s.fill(); s.stroke();
-      drawVolumeEllipse(s, 32, -5, 13, 11, "#d9ddd7", "#747e7b", "#292f2e", 0.08);
-      s.fillStyle = "#46504e";
-      for (const [x, y, w, h] of [[-26,-5,7,6],[-11,8,7,6],[3,1,7,5],[-17,20,7,5],[12,15,7,6],[16,-18,6,5],[30,-18,6,5]]) s.fillRect(x, y, w, h);
-      s.fillStyle = "#ff3e30"; s.fillRect(15, -20, 6, 4); s.fillRect(29, -20, 6, 4);
-      s.fillStyle = "#111514"; s.beginPath(); s.ellipse(39, -6, 5, 4, 0, 0, Math.PI * 2); s.fill();
-      s.fillStyle = "#e6dfc4";
-      s.beginPath(); s.moveTo(24, 4); s.lineTo(28, 14); s.lineTo(32, 4); s.closePath(); s.fill();
-      s.beginPath(); s.moveTo(33, 3); s.lineTo(37, 12); s.lineTo(40, 1); s.closePath(); s.fill();
+      addBox(mesh, -0.23, -0.24, 0.22 + Math.max(0, stride), 0.16, 0.2, 0.44, "#73807d");
+      addBox(mesh, 0.23, -0.24, 0.22 + Math.max(0, -stride), 0.16, 0.2, 0.44, "#73807d");
+      addBox(mesh, -0.23, 0.28, 0.22 + Math.max(0, -stride), 0.16, 0.2, 0.44, "#9aa4a1");
+      addBox(mesh, 0.23, 0.28, 0.22 + Math.max(0, stride), 0.16, 0.2, 0.44, "#9aa4a1");
+      addBox(mesh, 0, -0.02, 0.5, 0.66, 0.84, 0.38, "#899492");
+      addBox(mesh, 0, 0.34, 0.57, 0.7, 0.46, 0.43, "#aab3b0");
+      addBox(mesh, 0, 0.62, 0.72, 0.48, 0.43, 0.42, "#b9c2bf");
+      addBox(mesh, 0, 0.86, 0.64, 0.34, 0.27, 0.23, "#7a8582");
+      addPyramid(mesh, -0.14, 0.64, 0.86, 0.17, 0.16, 0.2, "#687370", -0.08);
+      addPyramid(mesh, 0.14, 0.64, 0.86, 0.17, 0.16, 0.2, "#687370", 0.08);
+      addBox(mesh, -0.11, 0.846, 0.77, 0.07, 0.035, 0.06, "#ff382e");
+      addBox(mesh, 0.11, 0.846, 0.77, 0.07, 0.035, 0.06, "#ff382e");
+      addBox(mesh, 0, 1.005, 0.67, 0.09, 0.04, 0.07, "#111514");
+      addBox(mesh, -0.09, 1.018, 0.56, 0.065, 0.035, 0.14, "#eee3c5", -0.08);
+      addBox(mesh, 0.09, 1.018, 0.56, 0.065, 0.035, 0.14, "#eee3c5", 0.08);
+      addBox(mesh, -0.08, -0.53, 0.57, 0.18, 0.38, 0.17, "#77827f", 0.2);
+      addBox(mesh, -0.22, -0.82, 0.6, 0.16, 0.38, 0.15, "#56615e", 0.55);
+      for (const [x, y, z] of [[-0.22,0.585,0.55],[0.22,0.585,0.62],[-0.12,0.585,0.42],[0.1,0.585,0.48]]) {
+        addBox(mesh, x, y, z, 0.12, 0.04, 0.1, "#303a38");
+      }
+      for (const [x, y, z] of [[-0.342,-0.22,0.58],[-0.342,0.08,0.46],[-0.342,0.3,0.65],[0.342,-0.15,0.48],[0.342,0.18,0.62]]) {
+        addBox(mesh, x, y, z, 0.035, 0.13, 0.11, "#303a38");
+      }
     } else {
-      drawVolumeBox(s, -22 + motion, 18, 16, 27, "#5a3830", "#2c1c19", "#0d0c0a");
-      drawVolumeBox(s, 6 - motion, 18, 16, 27, "#5a3830", "#2c1c19", "#0d0c0a");
-      drawVolumeEllipse(s, -18, -1, 18, 21, "#9b5a42", "#63362c", "#271512");
-      drawVolumeEllipse(s, 18, -1, 18, 21, "#9b5a42", "#63362c", "#271512");
-      drawVolumeEllipse(s, 0, 8, 29, 31, "#a45f46", "#6e382d", "#291512");
-      drawVolumeEllipse(s, 0, -24, 18, 18, "#b98258", "#755039", "#291d17");
-      s.fillStyle = "#1d281b"; s.fillRect(-19, -44, 38, 13);
-      const hat = s.createLinearGradient(-30, -39, 30, -29);
-      hat.addColorStop(0, "#10150e"); hat.addColorStop(0.5, "#405137"); hat.addColorStop(1, "#151b13");
-      s.fillStyle = hat; s.beginPath(); s.ellipse(0, -33, 31, 9, 0, 0, Math.PI * 2); s.fill();
-      s.fillStyle = "#070807"; s.beginPath(); s.ellipse(0, -29, 24, 5, 0, 0, Math.PI * 2); s.fill();
-      s.fillStyle = "#090a08"; s.fillRect(-16, -27, 32, 8);
-      s.fillStyle = "#ef352e"; s.fillRect(-13, -25, 7, 3); s.fillRect(6, -25, 7, 3);
-      s.strokeStyle = "#17130e"; s.lineWidth = 9; s.beginPath(); s.moveTo(-31, 2); s.lineTo(27, 17); s.stroke();
-      s.strokeStyle = "#d0ad66"; s.lineWidth = 3; s.beginPath(); s.moveTo(-35, -2); s.lineTo(33, 16); s.stroke();
-      drawVolumeEllipse(s, 34, 17, 10, 7, "#75613b", "#332b1c", "#0c0b08", 0.24);
+      addBox(mesh, -0.2, 0, 0.2 + Math.max(0, stride), 0.2, 0.24, 0.4, "#4c2015");
+      addBox(mesh, 0.2, 0, 0.2 + Math.max(0, -stride), 0.2, 0.24, 0.4, "#4c2015");
+      addPyramid(mesh, 0, 0, 0.2, 0.78, 0.62, 0.95 + stride, "#bc3c1d");
+      addPyramid(mesh, -0.2, 0.02, 0.43, 0.43, 0.4, 0.83 - stride, "#e45b23", -0.2);
+      addPyramid(mesh, 0.22, -0.03, 0.4, 0.42, 0.38, 0.92 + stride, "#d94b1e", 0.18);
+      addBox(mesh, 0, 0.16, 0.66, 0.48, 0.34, 0.38, "#ef7627");
+      addBox(mesh, -0.12, 0.345, 0.72, 0.09, 0.035, 0.075, "#ff2b20");
+      addBox(mesh, 0.12, 0.345, 0.72, 0.09, 0.035, 0.075, "#ff2b20");
+      addBox(mesh, 0, 0.35, 0.56, 0.24, 0.04, 0.06, "#2c100b");
+    }
+    return mesh;
+  }
+
+  function triangleNormal(vertices) {
+    const ab = { x: vertices[1].x - vertices[0].x, y: vertices[1].y - vertices[0].y, z: vertices[1].z - vertices[0].z };
+    const ac = { x: vertices[2].x - vertices[0].x, y: vertices[2].y - vertices[0].y, z: vertices[2].z - vertices[0].z };
+    const normal = { x: ab.y * ac.z - ab.z * ac.y, y: ab.z * ac.x - ab.x * ac.z, z: ab.x * ac.y - ab.y * ac.x };
+    const length = Math.hypot(normal.x, normal.y, normal.z) || 1;
+    return { x: normal.x / length, y: normal.y / length, z: normal.z / length };
+  }
+
+  function modelPointToWorld(enemy, point) {
+    const cosine = Math.cos(enemy.facing);
+    const sine = Math.sin(enemy.facing);
+    return { x: enemy.x + cosine * point.y - sine * point.x, y: enemy.y + sine * point.y + cosine * point.x, z: point.z };
+  }
+
+  function scaleModelPoint(point) {
+    return { x: point.x * 0.82, y: point.y * 0.52, z: point.z };
+  }
+
+  function modelNormalToWorld(enemy, normal) {
+    const cosine = Math.cos(enemy.facing);
+    const sine = Math.sin(enemy.facing);
+    return { x: cosine * normal.y - sine * normal.x, y: sine * normal.y + cosine * normal.x, z: normal.z };
+  }
+
+  function worldPointToCamera(point) {
+    const dx = point.x - player.x;
+    const dy = point.y - player.y;
+    return {
+      side: -dx * Math.sin(player.angle) + dy * Math.cos(player.angle),
+      depth: dx * Math.cos(player.angle) + dy * Math.sin(player.angle),
+      z: point.z,
+    };
+  }
+
+  function clipMeshNear(vertices) {
+    const clipped = [];
+    for (let index = 0; index < vertices.length; index += 1) {
+      const current = vertices[index];
+      const previous = vertices[(index + vertices.length - 1) % vertices.length];
+      const currentInside = current.depth >= MESH_NEAR;
+      const previousInside = previous.depth >= MESH_NEAR;
+      if (currentInside !== previousInside) {
+        const amount = (MESH_NEAR - previous.depth) / (current.depth - previous.depth);
+        clipped.push({
+          side: previous.side + (current.side - previous.side) * amount,
+          depth: MESH_NEAR,
+          z: previous.z + (current.z - previous.z) * amount,
+        });
+      }
+      if (currentInside) clipped.push(current);
+    }
+    return clipped;
+  }
+
+  function projectMeshPoint(point) {
+    return {
+      x: WIDTH / 2 + (point.side / point.depth) * PROJECTION_PLANE,
+      y: VIEW_HEIGHT / 2 + ((CAMERA_HEIGHT - point.z) / point.depth) * VIEW_HEIGHT,
+      inverseDepth: 1 / point.depth,
+    };
+  }
+
+  function shadeMeshColor(color, normal, depth, hitFlash) {
+    const value = parseInt(color.slice(1), 16);
+    const base = [(value >> 16) & 255, (value >> 8) & 255, value & 255];
+    const light = { x: -0.52, y: -0.39, z: 0.76 };
+    const diffuse = Math.max(0, normal.x * light.x + normal.y * light.y + normal.z * light.z);
+    const fog = clamp(1 - depth / (MAX_DEPTH * 1.25), 0.38, 1);
+    const brightness = (0.3 + diffuse * 0.7) * fog;
+    const flash = clamp(hitFlash * 0.78, 0, 0.78);
+    return base.map((channel) => Math.round(channel * brightness * (1 - flash) + 255 * flash));
+  }
+
+  function rasterizeMeshTriangle(triangle, image, zBuffer, originX, originY) {
+    const [a, b, c] = triangle.points;
+    const denominator = (b.y - c.y) * (a.x - c.x) + (c.x - b.x) * (a.y - c.y);
+    if (Math.abs(denominator) < 0.0001) return;
+    const minX = Math.max(Math.ceil(originX / MESH_PIXEL) * MESH_PIXEL, Math.floor(Math.min(a.x, b.x, c.x) / MESH_PIXEL) * MESH_PIXEL);
+    const maxX = Math.min(originX + image.width - 1, Math.ceil(Math.max(a.x, b.x, c.x)));
+    const minY = Math.max(Math.ceil(originY / MESH_PIXEL) * MESH_PIXEL, Math.floor(Math.min(a.y, b.y, c.y) / MESH_PIXEL) * MESH_PIXEL);
+    const maxY = Math.min(originY + image.height - 1, Math.ceil(Math.max(a.y, b.y, c.y)));
+    for (let y = minY; y <= maxY; y += MESH_PIXEL) {
+      for (let x = minX; x <= maxX; x += MESH_PIXEL) {
+        const sampleX = x + MESH_PIXEL * 0.5;
+        const sampleY = y + MESH_PIXEL * 0.5;
+        const wa = ((b.y - c.y) * (sampleX - c.x) + (c.x - b.x) * (sampleY - c.y)) / denominator;
+        const wb = ((c.y - a.y) * (sampleX - c.x) + (a.x - c.x) * (sampleY - c.y)) / denominator;
+        const wc = 1 - wa - wb;
+        if (wa < -0.001 || wb < -0.001 || wc < -0.001) continue;
+        const inverseDepth = wa * a.inverseDepth + wb * b.inverseDepth + wc * c.inverseDepth;
+        const depth = 1 / Math.max(0.0001, inverseDepth);
+        for (let offsetY = 0; offsetY < MESH_PIXEL; offsetY += 1) {
+          for (let offsetX = 0; offsetX < MESH_PIXEL; offsetX += 1) {
+            const globalX = x + offsetX;
+            const globalY = y + offsetY;
+            if (globalX > maxX || globalY > maxY || globalX < 0 || globalX >= WIDTH || globalY < 0 || globalY >= VIEW_HEIGHT) continue;
+            if (depth >= depthBuffer[globalX] - 0.015) continue;
+            const localX = globalX - originX;
+            const localY = globalY - originY;
+            const pixel = localY * image.width + localX;
+            if (depth >= zBuffer[pixel]) continue;
+            zBuffer[pixel] = depth;
+            const dataIndex = pixel * 4;
+            image.data[dataIndex] = triangle.color[0];
+            image.data[dataIndex + 1] = triangle.color[1];
+            image.data[dataIndex + 2] = triangle.color[2];
+            image.data[dataIndex + 3] = 255;
+            meshDebug.pixels += 1;
+          }
+        }
+      }
+    }
+  }
+
+  function renderEnemyMesh(enemy) {
+    const mesh = buildEnemyMesh(enemy);
+    const projectedTriangles = [];
+    let minX = WIDTH;
+    let maxX = 0;
+    let minY = VIEW_HEIGHT;
+    let maxY = 0;
+    meshDebug.models += 1;
+    meshDebug.triangles += mesh.length;
+
+    for (const triangle of mesh) {
+      const modelVertices = triangle.vertices.map(scaleModelPoint);
+      const worldVertices = modelVertices.map((point) => modelPointToWorld(enemy, point));
+      const localNormal = triangleNormal(modelVertices);
+      const normal = modelNormalToWorld(enemy, localNormal);
+      const center = worldVertices.reduce((sum, point) => ({ x: sum.x + point.x / 3, y: sum.y + point.y / 3, z: sum.z + point.z / 3 }), { x: 0, y: 0, z: 0 });
+      const toCamera = { x: player.x - center.x, y: player.y - center.y, z: CAMERA_HEIGHT - center.z };
+      if (normal.x * toCamera.x + normal.y * toCamera.y + normal.z * toCamera.z <= 0) continue;
+      const cameraVertices = worldVertices.map(worldPointToCamera);
+      const clipped = clipMeshNear(cameraVertices);
+      if (clipped.length < 3) continue;
+      for (let index = 1; index < clipped.length - 1; index += 1) {
+        const points = [clipped[0], clipped[index], clipped[index + 1]].map(projectMeshPoint);
+        if (points.every((point) => point.x < 0) || points.every((point) => point.x >= WIDTH) ||
+            points.every((point) => point.y < 0) || points.every((point) => point.y >= VIEW_HEIGHT)) continue;
+        const depth = 3 / (points[0].inverseDepth + points[1].inverseDepth + points[2].inverseDepth);
+        const projected = { points, color: shadeMeshColor(triangle.color, normal, depth, enemy.hitFlash) };
+        projectedTriangles.push(projected);
+        minX = Math.min(minX, ...points.map((point) => point.x));
+        maxX = Math.max(maxX, ...points.map((point) => point.x));
+        minY = Math.min(minY, ...points.map((point) => point.y));
+        maxY = Math.max(maxY, ...points.map((point) => point.y));
+      }
     }
 
-    if (enemy.hitFlash > 0) {
-      s.globalCompositeOperation = "source-atop";
-      s.fillStyle = `rgba(255,255,255,${enemy.hitFlash * 0.8})`;
-      s.fillRect(-48, -48, 96, 96);
-    }
-    return sprite;
+    if (!projectedTriangles.length) return;
+    const originX = clamp(Math.floor(minX) - 1, 0, WIDTH - 1);
+    const originY = clamp(Math.floor(minY) - 1, 0, VIEW_HEIGHT - 1);
+    const endX = clamp(Math.ceil(maxX) + 1, 0, WIDTH - 1);
+    const endY = clamp(Math.ceil(maxY) + 1, 0, VIEW_HEIGHT - 1);
+    const width = endX - originX + 1;
+    const height = endY - originY + 1;
+    if (width <= 0 || height <= 0) return;
+    const image = meshContext.createImageData(width, height);
+    const zBuffer = new Float32Array(width * height);
+    zBuffer.fill(Infinity);
+    meshDebug.visibleTriangles += projectedTriangles.length;
+    for (const triangle of projectedTriangles) rasterizeMeshTriangle(triangle, image, zBuffer, originX, originY);
+    meshContext.clearRect(originX, originY, width, height);
+    meshContext.putImageData(image, originX, originY);
+    ctx.drawImage(meshSurface, originX, originY, width, height, originX, originY, width, height);
   }
 
   function drawPickupSprite(pickup) {
@@ -994,11 +1192,24 @@
       aim: { ...aim },
       dartsInFlight: darts.length,
       enemiesAlive: enemies.filter((enemy) => enemy.alive).length,
-      enemies: enemies.map(({ type, x, y, hp, alive }) => ({ type, x, y, hp, alive })),
+      enemies: enemies.map(({ type, x, y, hp, alive, facing }) => ({ type, x, y, hp, alive, facing })),
+      mesh3d: { ...meshDebug },
     }),
     start: startGame,
     shoot,
     aimAt: (_x, y) => setAim(y),
+    setInspectionMode: (enabled) => { inspectionMode = Boolean(enabled); },
+    viewFrom: (x, y, angle) => {
+      if (!canOccupy(x, y)) return false;
+      player.x = x;
+      player.y = y;
+      player.angle = normalizeAngle(angle);
+      return true;
+    },
+    modelStats: () => Object.fromEntries(Object.keys(enemyCatalog).map((type) => [type, {
+      triangles: buildEnemyMesh({ type, phase: 0 }).length,
+      billboard: false,
+    }])),
     map: MAP.slice(),
   };
 }());

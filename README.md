@@ -1,6 +1,6 @@
 # PandaDoom
 
-PandaDoom is a small, original Doom-like browser game. It contains one bamboo-sanctuary level, five panda threats, a bamboo dart blaster, and a reactive panda status face. It does not include code or artwork from Doom.
+PandaDoom is a small, original Doom-like browser game. It contains one bamboo-sanctuary level, five panda threats, a bamboo dart blaster, and a reactive panda status face. Its monsters are dependency-free low-poly 3D triangle models rendered in software against the ray-cast walls. It does not include code or artwork from Doom.
 
 ## Play locally
 

@@ -51,9 +51,9 @@
   const MESH_PIXEL = 2;
   const AIM_BOUNDS = { top: VIEW_HEIGHT * 0.16, bottom: VIEW_HEIGHT * 0.84 };
   const MODEL_BOUNDS = {
-    poacher: { width: 0.92, height: 1.24 },
-    leopard: { width: 1.05, height: 1.08 },
-    fire: { width: 0.9, height: 1.32 },
+    poacher: { width: 0.74, depth: 0.58, height: 1.24 },
+    leopard: { width: 0.68, depth: 1.08, height: 1.08 },
+    fire: { width: 0.72, depth: 0.42, height: 1.32 },
   };
   const keys = Object.create(null);
   const touch = Object.create(null);
@@ -65,6 +65,7 @@
   let messageTimer = 3;
   let exitPulse = 0;
   let depthBuffer = new Float32Array(WIDTH);
+  let enemyDepthBuffer = new Float32Array(WIDTH * VIEW_HEIGHT);
   let meshDebug = { models: 0, triangles: 0, visibleTriangles: 0, pixels: 0 };
   const aim = { x: WIDTH / 2, y: VIEW_HEIGHT / 2 };
   let pointerWasLocked = false;
@@ -179,10 +180,12 @@
   }
 
   function setAim(y) {
+    if (!Number.isFinite(y)) return false;
     aim.x = WIDTH / 2;
     aim.y = clamp(y, AIM_BOUNDS.top, AIM_BOUNDS.bottom);
     ui.crosshair.style.left = `${(aim.x / WIDTH) * 100}%`;
     ui.crosshair.style.top = `${(aim.y / HEIGHT) * 100}%`;
+    return true;
   }
 
   function castRayFrom(originX, originY, angle) {
@@ -315,7 +318,10 @@
     const bounds = MODEL_BOUNDS[enemy.type];
     const screenX = WIDTH / 2 + Math.tan(angle) * PROJECTION_PLANE;
     const size = Math.min(VIEW_HEIGHT * 1.8, (bounds.height * VIEW_HEIGHT) / Math.max(depth, 0.25));
-    const halfWidth = Math.min(WIDTH, (bounds.width * PROJECTION_PLANE) / (2 * Math.max(depth, 0.25)));
+    const facingOffset = normalizeAngle(enemy.facing - camera.angle);
+    const apparentHalfWidth = Math.abs(Math.cos(facingOffset)) * bounds.width / 2 +
+      Math.abs(Math.sin(facingOffset)) * bounds.depth / 2;
+    const halfWidth = Math.min(WIDTH, (apparentHalfWidth * PROJECTION_PLANE) / Math.max(depth, 0.25));
     const groundY = VIEW_HEIGHT / 2 + (CAMERA_HEIGHT * VIEW_HEIGHT) / Math.max(depth, 0.25);
     return { distance, depth, screenX, size, halfWidth, groundY, top: groundY - size };
   }
@@ -474,9 +480,11 @@
     const rayCount = 320;
     const stripWidth = WIDTH / rayCount;
     for (let ray = 0; ray < rayCount; ray += 1) {
-      const rayAngle = player.angle - FOV / 2 + (ray / rayCount) * FOV;
+      const rayScreenX = (ray + 0.5) * stripWidth;
+      const angleOffset = Math.atan((rayScreenX - WIDTH / 2) / PROJECTION_PLANE);
+      const rayAngle = player.angle + angleOffset;
       const hit = castRay(rayAngle);
-      const corrected = Math.max(0.01, hit.distance * Math.cos(rayAngle - player.angle));
+      const corrected = Math.max(0.01, hit.distance * Math.cos(angleOffset));
       const wallHeight = Math.min(VIEW_HEIGHT * 1.8, VIEW_HEIGHT / corrected);
       const top = VIEW_HEIGHT / 2 - wallHeight / 2;
       const shade = Math.max(0.12, 0.92 - corrected / (MAX_DEPTH * 0.72)) * (hit.side ? 0.68 : 1);
@@ -560,6 +568,7 @@
     }
     sprites.sort((a, b) => Math.hypot(b.x - player.x, b.y - player.y) - Math.hypot(a.x - player.x, a.y - player.y));
     meshDebug = { models: 0, triangles: 0, visibleTriangles: 0, pixels: 0 };
+    enemyDepthBuffer.fill(Infinity);
 
     for (const sprite of sprites) {
       const dx = sprite.x - player.x;
@@ -792,7 +801,7 @@
     return base.map((channel) => Math.round(channel * brightness * (1 - flash) + 255 * flash));
   }
 
-  function rasterizeMeshTriangle(triangle, image, zBuffer, originX, originY) {
+  function rasterizeMeshTriangle(triangle, image, originX, originY) {
     const [a, b, c] = triangle.points;
     const denominator = (b.y - c.y) * (a.x - c.x) + (c.x - b.x) * (a.y - c.y);
     if (Math.abs(denominator) < 0.0001) return;
@@ -819,8 +828,9 @@
             const localX = globalX - originX;
             const localY = globalY - originY;
             const pixel = localY * image.width + localX;
-            if (depth >= zBuffer[pixel]) continue;
-            zBuffer[pixel] = depth;
+            const scenePixel = globalY * WIDTH + globalX;
+            if (depth >= enemyDepthBuffer[scenePixel]) continue;
+            enemyDepthBuffer[scenePixel] = depth;
             const dataIndex = pixel * 4;
             image.data[dataIndex] = triangle.color[0];
             image.data[dataIndex + 1] = triangle.color[1];
@@ -877,10 +887,8 @@
     const height = endY - originY + 1;
     if (width <= 0 || height <= 0) return;
     const image = meshContext.createImageData(width, height);
-    const zBuffer = new Float32Array(width * height);
-    zBuffer.fill(Infinity);
     meshDebug.visibleTriangles += projectedTriangles.length;
-    for (const triangle of projectedTriangles) rasterizeMeshTriangle(triangle, image, zBuffer, originX, originY);
+    for (const triangle of projectedTriangles) rasterizeMeshTriangle(triangle, image, originX, originY);
     meshContext.clearRect(originX, originY, width, height);
     meshContext.putImageData(image, originX, originY);
     ctx.drawImage(meshSurface, originX, originY, width, height, originX, originY, width, height);
@@ -1200,7 +1208,7 @@
     aimAt: (_x, y) => setAim(y),
     setInspectionMode: (enabled) => { inspectionMode = Boolean(enabled); },
     viewFrom: (x, y, angle) => {
-      if (!canOccupy(x, y)) return false;
+      if (![x, y, angle].every(Number.isFinite) || !canOccupy(x, y)) return false;
       player.x = x;
       player.y = y;
       player.angle = normalizeAngle(angle);

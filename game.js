@@ -50,10 +50,11 @@
   const MESH_NEAR = 0.08;
   const MESH_PIXEL = 2;
   const AIM_BOUNDS = { top: VIEW_HEIGHT * 0.16, bottom: VIEW_HEIGHT * 0.84 };
+  const ENEMY_SCALE = { poacher: 0.72, leopard: 0.72, fire: 0.7 };
   const MODEL_BOUNDS = {
-    poacher: { width: 0.74, depth: 0.58, height: 1.24 },
-    leopard: { width: 0.68, depth: 1.08, height: 1.08 },
-    fire: { width: 0.72, depth: 0.42, height: 1.32 },
+    poacher: { width: 0.54, depth: 0.42, height: 0.9 },
+    leopard: { width: 0.5, depth: 0.78, height: 0.72 },
+    fire: { width: 0.52, depth: 0.31, height: 0.95 },
   };
   const keys = Object.create(null);
   const touch = Object.create(null);
@@ -74,9 +75,9 @@
   let inspectionMode = false;
 
   const enemyCatalog = {
-    poacher: { name: "POACHER", color: "#793c2c", accent: "#e0bd73", hp: 2, speed: 0.68, damage: 9 },
-    leopard: { name: "SNOW LEOPARD", color: "#b9c7c6", accent: "#48514f", hp: 2, speed: 0.92, damage: 11 },
-    fire: { name: "WILDFIRE SPIRIT", color: "#ec5a28", accent: "#ffcc45", hp: 3, speed: 0.58, damage: 13 },
+    poacher: { name: "POACHER", hp: 2, speed: 0.64, damage: 7, attackRange: 6.4, attackInterval: 1.55, projectileSpeed: 4.8 },
+    leopard: { name: "SNOW LEOPARD", hp: 2, speed: 0.92, damage: 11 },
+    fire: { name: "WILDFIRE SPIRIT", hp: 3, speed: 0.56, damage: 10, attackRange: 5.4, attackInterval: 1.85, projectileSpeed: 2.65 },
   };
 
   const player = {
@@ -95,6 +96,8 @@
   let enemies = [];
   let pickups = [];
   let darts = [];
+  let enemyProjectiles = [];
+  let navigationCache = { cellX: -1, cellY: -1, field: null };
 
   function resetGame() {
     inspectionMode = false;
@@ -123,6 +126,8 @@
       { type: "ammo", x: 12.5, y: 14.2, active: true },
     ];
     darts = [];
+    enemyProjectiles = [];
+    navigationCache = { cellX: -1, cellY: -1, field: null };
     setAim(VIEW_HEIGHT / 2);
     message = "CLEAR 5 THREATS — FIND THE GREEN GATE";
     messageTimer = 4;
@@ -142,6 +147,8 @@
       hitFlash: 0,
       phase: Math.random() * Math.PI * 2,
       facing: Math.atan2(player.y - y, player.x - x),
+      navigation: "idle",
+      shotsFired: 0,
     };
   }
 
@@ -227,6 +234,60 @@
     if (canOccupy(entity.x, entity.y + dy, radius)) entity.y += dy;
   }
 
+  function buildNavigationField(targetX, targetY) {
+    const width = MAP[0].length;
+    const height = MAP.length;
+    const field = Array.from({ length: height }, () => Array(width).fill(Infinity));
+    const startX = Math.floor(targetX);
+    const startY = Math.floor(targetY);
+    const queue = [[startX, startY]];
+    field[startY][startX] = 0;
+    for (let index = 0; index < queue.length; index += 1) {
+      const [x, y] = queue[index];
+      const nextDistance = field[y][x] + 1;
+      for (const [offsetX, offsetY] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const nextX = x + offsetX;
+        const nextY = y + offsetY;
+        if (nextY < 0 || nextY >= height || nextX < 0 || nextX >= width || field[nextY][nextX] !== Infinity) continue;
+        if (!canOccupy(nextX + 0.5, nextY + 0.5, 0.22)) continue;
+        field[nextY][nextX] = nextDistance;
+        queue.push([nextX, nextY]);
+      }
+    }
+    return field;
+  }
+
+  function navigationFieldForPlayer() {
+    const cellX = Math.floor(player.x);
+    const cellY = Math.floor(player.y);
+    if (navigationCache.cellX !== cellX || navigationCache.cellY !== cellY || !navigationCache.field) {
+      navigationCache = { cellX, cellY, field: buildNavigationField(player.x, player.y) };
+    }
+    return navigationCache.field;
+  }
+
+  function navigationVector(enemy, field) {
+    const cellX = Math.floor(enemy.x);
+    const cellY = Math.floor(enemy.y);
+    const currentDistance = field[cellY]?.[cellX] ?? Infinity;
+    let best = null;
+    for (const [offsetX, offsetY] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const nextX = cellX + offsetX;
+      const nextY = cellY + offsetY;
+      const distance = field[nextY]?.[nextX] ?? Infinity;
+      if (distance >= currentDistance || !canOccupy(nextX + 0.5, nextY + 0.5, 0.22)) continue;
+      const centerDistance = Math.hypot(nextX + 0.5 - enemy.x, nextY + 0.5 - enemy.y);
+      if (!best || distance < best.distance || (distance === best.distance && centerDistance < best.centerDistance)) {
+        best = { x: nextX + 0.5, y: nextY + 0.5, distance, centerDistance };
+      }
+    }
+    if (!best) return null;
+    const dx = best.x - enemy.x;
+    const dy = best.y - enemy.y;
+    const length = Math.hypot(dx, dy) || 1;
+    return { x: dx / length, y: dy / length };
+  }
+
   function update(dt) {
     if (state !== "playing") return;
 
@@ -276,7 +337,8 @@
       }
     }
 
-    updateEnemies(dt);
+    updateEnemies(dt, navigationFieldForPlayer());
+    updateEnemyProjectiles(dt);
     updateDarts(dt);
 
     if (player.kills === enemies.length && Math.hypot(player.x - 13.5, player.y - 13.5) < 0.7) {
@@ -284,7 +346,27 @@
     }
   }
 
-  function updateEnemies(dt) {
+  function launchEnemyProjectile(enemy, dx, dy, distance) {
+    const data = enemyCatalog[enemy.type];
+    const spread = enemy.type === "poacher" ? Math.sin(enemy.phase * 2.3) * 0.045 : 0;
+    const angle = Math.atan2(dy, dx) + spread;
+    const muzzleDistance = enemy.type === "poacher" ? 0.32 : 0.2;
+    enemyProjectiles.push({
+      type: enemy.type === "fire" ? "fireball" : "poacher-shot",
+      x: enemy.x + Math.cos(angle) * muzzleDistance,
+      y: enemy.y + Math.sin(angle) * muzzleDistance,
+      z: enemy.type === "fire" ? 0.48 : 0.52,
+      vx: Math.cos(angle) * data.projectileSpeed,
+      vy: Math.sin(angle) * data.projectileSpeed,
+      damage: data.damage,
+      age: 0,
+      maxAge: Math.min(3.2, distance / data.projectileSpeed + 0.8),
+      alive: true,
+    });
+    enemy.shotsFired += 1;
+  }
+
+  function updateEnemies(dt, navigationField) {
     for (const enemy of enemies) {
       if (!enemy.alive) continue;
       enemy.hitFlash = Math.max(0, enemy.hitFlash - dt * 5);
@@ -295,15 +377,48 @@
       const dy = player.y - enemy.y;
       const distance = Math.hypot(dx, dy);
       enemy.facing = turnToward(enemy.facing, Math.atan2(dy, dx), dt * 1.8);
-      if (distance < 7.5 && distance > 0.68 && hasLineOfSight(enemy.x, enemy.y, player.x, player.y)) {
-        const speed = enemyCatalog[enemy.type].speed * dt;
-        moveEntity(enemy, (dx / distance) * speed, (dy / distance) * speed, 0.22);
+      const lineOfSight = hasLineOfSight(enemy.x, enemy.y, player.x, player.y);
+      const ranged = enemy.type === "poacher" || enemy.type === "fire";
+      const shouldAdvance = distance < 10 && distance > (ranged && lineOfSight ? enemyCatalog[enemy.type].attackRange * 0.62 : 0.68);
+      if (shouldAdvance) {
+        const direct = lineOfSight ? { x: dx / distance, y: dy / distance } : navigationVector(enemy, navigationField);
+        enemy.navigation = lineOfSight ? "direct" : direct ? "path" : "blocked";
+        if (direct) {
+          const speed = enemyCatalog[enemy.type].speed * dt;
+          moveEntity(enemy, direct.x * speed, direct.y * speed, 0.22);
+        }
+      } else {
+        enemy.navigation = ranged && lineOfSight ? "ranged" : "hold";
       }
-      if (distance <= 0.82 && enemy.attackCooldown === 0) {
+      if (ranged && lineOfSight && distance <= enemyCatalog[enemy.type].attackRange && distance > 0.75 && enemy.attackCooldown === 0) {
+        enemy.attackCooldown = enemyCatalog[enemy.type].attackInterval * (0.88 + Math.random() * 0.24);
+        launchEnemyProjectile(enemy, dx, dy, distance);
+      } else if (distance <= 0.78 && enemy.attackCooldown === 0) {
         enemy.attackCooldown = 0.85;
         hurtPlayer(enemyCatalog[enemy.type].damage);
       }
     }
+  }
+
+  function updateEnemyProjectiles(dt) {
+    for (const projectile of enemyProjectiles) {
+      if (!projectile.alive) continue;
+      projectile.age += dt;
+      const distance = Math.hypot(projectile.vx, projectile.vy) * dt;
+      const steps = Math.max(1, Math.ceil(distance / 0.08));
+      for (let step = 0; step < steps && projectile.alive; step += 1) {
+        projectile.x += projectile.vx * dt / steps;
+        projectile.y += projectile.vy * dt / steps;
+        if (isSolid(projectile.x, projectile.y)) {
+          projectile.alive = false;
+        } else if (Math.hypot(player.x - projectile.x, player.y - projectile.y) < 0.24) {
+          projectile.alive = false;
+          hurtPlayer(projectile.damage);
+        }
+      }
+      if (projectile.age >= projectile.maxAge) projectile.alive = false;
+    }
+    enemyProjectiles = enemyProjectiles.filter((projectile) => projectile.alive);
   }
 
   function projectEnemy(enemy, camera = player) {
@@ -443,6 +558,7 @@
     ctx.translate(shakeX, shakeY);
     renderWorld();
     renderSprites();
+    renderEnemyProjectiles();
     renderDarts();
     renderWeapon(sway, bob);
     renderGrit();
@@ -689,28 +805,41 @@
       addBox(mesh, 0.03, 0.24, 0.65, 0.62, 0.13, 0.13, "#6d542f", -0.08);
       addBox(mesh, 0.18, 0.55, 0.67, 0.08, 0.62, 0.08, "#171b13");
     } else if (enemy.type === "leopard") {
-      addBox(mesh, -0.23, -0.24, 0.22 + Math.max(0, stride), 0.16, 0.2, 0.44, "#73807d");
-      addBox(mesh, 0.23, -0.24, 0.22 + Math.max(0, -stride), 0.16, 0.2, 0.44, "#73807d");
-      addBox(mesh, -0.23, 0.28, 0.22 + Math.max(0, -stride), 0.16, 0.2, 0.44, "#9aa4a1");
-      addBox(mesh, 0.23, 0.28, 0.22 + Math.max(0, stride), 0.16, 0.2, 0.44, "#9aa4a1");
-      addBox(mesh, 0, -0.02, 0.5, 0.66, 0.84, 0.38, "#899492");
-      addBox(mesh, 0, 0.34, 0.57, 0.7, 0.46, 0.43, "#aab3b0");
-      addBox(mesh, 0, 0.62, 0.72, 0.48, 0.43, 0.42, "#b9c2bf");
-      addBox(mesh, 0, 0.86, 0.64, 0.34, 0.27, 0.23, "#7a8582");
-      addPyramid(mesh, -0.14, 0.64, 0.86, 0.17, 0.16, 0.2, "#687370", -0.08);
-      addPyramid(mesh, 0.14, 0.64, 0.86, 0.17, 0.16, 0.2, "#687370", 0.08);
-      addBox(mesh, -0.11, 0.846, 0.77, 0.07, 0.035, 0.06, "#ff382e");
-      addBox(mesh, 0.11, 0.846, 0.77, 0.07, 0.035, 0.06, "#ff382e");
-      addBox(mesh, 0, 1.005, 0.67, 0.09, 0.04, 0.07, "#111514");
-      addBox(mesh, -0.09, 1.018, 0.56, 0.065, 0.035, 0.14, "#eee3c5", -0.08);
-      addBox(mesh, 0.09, 1.018, 0.56, 0.065, 0.035, 0.14, "#eee3c5", 0.08);
-      addBox(mesh, -0.08, -0.53, 0.57, 0.18, 0.38, 0.17, "#77827f", 0.2);
-      addBox(mesh, -0.22, -0.82, 0.6, 0.16, 0.38, 0.15, "#56615e", 0.55);
-      for (const [x, y, z] of [[-0.22,0.585,0.55],[0.22,0.585,0.62],[-0.12,0.585,0.42],[0.1,0.585,0.48]]) {
-        addBox(mesh, x, y, z, 0.12, 0.04, 0.1, "#303a38");
+      const snow = "#c7cfcd";
+      const shadowSnow = "#929d9b";
+      const rosette = "#394341";
+      for (const [x, y, phase] of [[-0.23,-0.28,1],[0.23,-0.28,-1],[-0.22,0.31,-1],[0.22,0.31,1]]) {
+        addBox(mesh, x, y, 0.18 + Math.max(0, stride * phase), 0.15, 0.22, 0.36, shadowSnow);
+        addBox(mesh, x, y + 0.035, 0.055, 0.2, 0.25, 0.11, "#d9dfdd");
       }
-      for (const [x, y, z] of [[-0.342,-0.22,0.58],[-0.342,0.08,0.46],[-0.342,0.3,0.65],[0.342,-0.15,0.48],[0.342,0.18,0.62]]) {
-        addBox(mesh, x, y, z, 0.035, 0.13, 0.11, "#303a38");
+      addBox(mesh, 0, -0.03, 0.43, 0.54, 0.96, 0.34, shadowSnow);
+      addBox(mesh, 0, 0.31, 0.51, 0.57, 0.4, 0.4, snow);
+      addBox(mesh, 0, 0.55, 0.58, 0.46, 0.34, 0.34, "#d5dcda");
+      addBox(mesh, 0, 0.76, 0.68, 0.43, 0.4, 0.34, snow);
+      addBox(mesh, -0.13, 0.91, 0.61, 0.17, 0.24, 0.2, "#dce1df");
+      addBox(mesh, 0.13, 0.91, 0.61, 0.17, 0.24, 0.2, "#dce1df");
+      addBox(mesh, 0, 1.01, 0.58, 0.23, 0.2, 0.15, "#eef1ef");
+      addBox(mesh, -0.15, 0.7, 0.86, 0.13, 0.12, 0.11, "#707a78", -0.04);
+      addBox(mesh, 0.15, 0.7, 0.86, 0.13, 0.12, 0.11, "#707a78", 0.04);
+      addBox(mesh, -0.15, 0.77, 0.865, 0.07, 0.025, 0.055, "#b78990");
+      addBox(mesh, 0.15, 0.77, 0.865, 0.07, 0.025, 0.055, "#b78990");
+      addBox(mesh, -0.1, 0.965, 0.72, 0.075, 0.035, 0.045, "#9be5e7", -0.16);
+      addBox(mesh, 0.1, 0.965, 0.72, 0.075, 0.035, 0.045, "#9be5e7", 0.16);
+      addBox(mesh, -0.11, 0.952, 0.79, 0.08, 0.03, 0.035, rosette, 0.14);
+      addBox(mesh, 0.11, 0.952, 0.79, 0.08, 0.03, 0.035, rosette, -0.14);
+      addBox(mesh, 0, 1.115, 0.61, 0.09, 0.04, 0.065, "#161b1a");
+      addBox(mesh, 0, 1.105, 0.515, 0.21, 0.05, 0.05, "#c5cdca");
+      addBox(mesh, -0.08, -0.56, 0.48, 0.2, 0.38, 0.19, shadowSnow, 0.18);
+      addBox(mesh, -0.2, -0.83, 0.43, 0.19, 0.36, 0.18, "#7e8987", 0.5);
+      addBox(mesh, -0.32, -1.02, 0.34, 0.17, 0.3, 0.16, shadowSnow, 0.78);
+      addBox(mesh, -0.34, -1.18, 0.24, 0.14, 0.24, 0.13, "#687270", -0.35);
+      for (const [x, y, z, width, depth] of [
+        [-0.2,-0.23,0.61,0.13,0.1],[0.2,-0.12,0.61,0.13,0.1],[-0.08,0.08,0.615,0.14,0.1],
+        [0.23,0.23,0.65,0.1,0.09],[-0.2,0.35,0.69,0.11,0.08],[-0.11,0.69,0.88,0.08,0.04],
+        [0.11,0.69,0.88,0.08,0.04]
+      ]) addBox(mesh, x, y, z, width, depth, 0.035, rosette);
+      for (const [x, y, z] of [[-0.305,-0.24,0.44],[0.305,-0.03,0.5],[-0.305,0.2,0.53],[0.305,0.38,0.6]]) {
+        addBox(mesh, x, y, z, 0.025, 0.14, 0.1, rosette);
       }
     } else {
       addBox(mesh, -0.2, 0, 0.2 + Math.max(0, stride), 0.2, 0.24, 0.4, "#4c2015");
@@ -740,8 +869,9 @@
     return { x: enemy.x + cosine * point.y - sine * point.x, y: enemy.y + sine * point.y + cosine * point.x, z: point.z };
   }
 
-  function scaleModelPoint(point) {
-    return { x: point.x * 0.82, y: point.y * 0.52, z: point.z };
+  function scaleModelPoint(point, enemy) {
+    const scale = ENEMY_SCALE[enemy.type];
+    return { x: point.x * 0.82 * scale, y: point.y * 0.52 * scale, z: point.z * scale };
   }
 
   function modelNormalToWorld(enemy, normal) {
@@ -852,7 +982,7 @@
     meshDebug.triangles += mesh.length;
 
     for (const triangle of mesh) {
-      const modelVertices = triangle.vertices.map(scaleModelPoint);
+      const modelVertices = triangle.vertices.map((point) => scaleModelPoint(point, enemy));
       const worldVertices = modelVertices.map((point) => modelPointToWorld(enemy, point));
       const localNormal = triangleNormal(modelVertices);
       const normal = modelNormalToWorld(enemy, localNormal);
@@ -930,6 +1060,49 @@
       ctx.fillStyle = "#d7c69a";
       ctx.beginPath();
       ctx.moveTo(6, 0); ctx.lineTo(0, -width); ctx.lineTo(0, width); ctx.closePath(); ctx.fill();
+      ctx.restore();
+    }
+  }
+
+  function renderEnemyProjectiles() {
+    const visible = enemyProjectiles.map((projectile) => {
+      const dx = projectile.x - player.x;
+      const dy = projectile.y - player.y;
+      const distance = Math.hypot(dx, dy);
+      const angle = normalizeAngle(Math.atan2(dy, dx) - player.angle);
+      const depth = distance * Math.cos(angle);
+      if (depth <= MESH_NEAR || Math.abs(angle) > FOV * 0.72) return null;
+      const x = WIDTH / 2 + Math.tan(angle) * PROJECTION_PLANE;
+      const y = VIEW_HEIGHT / 2 + ((CAMERA_HEIGHT - projectile.z) / depth) * VIEW_HEIGHT;
+      if (depth >= wallDepthAtScreenX(x) - 0.02) return null;
+      return { projectile, depth, x, y };
+    }).filter(Boolean).sort((a, b) => b.depth - a.depth);
+
+    for (const item of visible) {
+      const { projectile, depth, x, y } = item;
+      const centerX = clamp(Math.round(x), 0, WIDTH - 1);
+      const centerY = clamp(Math.round(y), 0, VIEW_HEIGHT - 1);
+      if (depth >= enemyDepthBuffer[centerY * WIDTH + centerX]) continue;
+      const baseSize = projectile.type === "fireball" ? 0.2 : 0.09;
+      const size = clamp((baseSize * VIEW_HEIGHT) / depth, projectile.type === "fireball" ? 5 : 3, projectile.type === "fireball" ? 42 : 18);
+      ctx.save();
+      ctx.translate(Math.round(x), Math.round(y));
+      if (projectile.type === "fireball") {
+        ctx.fillStyle = "rgba(131,22,8,0.5)";
+        ctx.fillRect(-size * 0.85, -size * 0.85, size * 1.7, size * 1.7);
+        ctx.fillStyle = "#e74419";
+        ctx.rotate(projectile.age * 5);
+        ctx.fillRect(-size * 0.62, -size * 0.62, size * 1.24, size * 1.24);
+        ctx.fillStyle = "#ffbd35";
+        ctx.fillRect(-size * 0.3, -size * 0.3, size * 0.6, size * 0.6);
+      } else {
+        const screenAngle = Math.atan2(projectile.vy, projectile.vx) - player.angle;
+        ctx.rotate(screenAngle);
+        ctx.fillStyle = "rgba(255,54,30,0.38)";
+        ctx.fillRect(-size * 3.4, -size, size * 4.2, size * 2);
+        ctx.fillStyle = "#ffcb58";
+        ctx.fillRect(-size * 0.6, -size * 0.5, size * 1.2, size);
+      }
       ctx.restore();
     }
   }
@@ -1197,8 +1370,11 @@
       player: { ...player },
       aim: { ...aim },
       dartsInFlight: darts.length,
+      enemyProjectiles: enemyProjectiles.map(({ type, x, y, z, age }) => ({ type, x, y, z, age })),
       enemiesAlive: enemies.filter((enemy) => enemy.alive).length,
-      enemies: enemies.map(({ type, x, y, hp, alive, facing }) => ({ type, x, y, hp, alive, facing })),
+      enemies: enemies.map(({ type, x, y, hp, alive, facing, navigation, shotsFired }) => ({
+        type, x, y, hp, alive, facing, navigation, shotsFired,
+      })),
       mesh3d: { ...meshDebug },
     }),
     start: startGame,
@@ -1215,6 +1391,7 @@
     modelStats: () => Object.fromEntries(Object.keys(enemyCatalog).map((type) => [type, {
       triangles: buildEnemyMesh({ type, phase: 0 }).length,
       billboard: false,
+      scale: ENEMY_SCALE[type],
     }])),
     map: MAP.slice(),
   };

@@ -15,7 +15,7 @@ Then open `http://localhost:8080`.
 Controls:
 
 - Move with WASD or the arrow keys.
-- Aim the movable target in every direction with the mouse or I/J/K/L. Keep moving at the horizontal edges to turn.
+- Aim the movable target in every direction with the mouse or I/J/K/L. With the mouse, keep moving at the horizontal edges to turn.
 - Turn with Q/E or the left/right arrow keys.
 - Fire with the mouse button or Space.
 - Press Esc to pause.

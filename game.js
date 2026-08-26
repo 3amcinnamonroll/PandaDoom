@@ -167,16 +167,16 @@
     ui.crosshair.style.top = `${(aim.y / HEIGHT) * 100}%`;
   }
 
-  function castRay(angle) {
+  function castRayFrom(originX, originY, angle) {
     const sin = Math.sin(angle);
     const cos = Math.cos(angle);
     let distance = 0;
-    let lastX = player.x;
-    let lastY = player.y;
+    let lastX = originX;
+    let lastY = originY;
     while (distance < MAX_DEPTH) {
       distance += 0.025;
-      const x = player.x + cos * distance;
-      const y = player.y + sin * distance;
+      const x = originX + cos * distance;
+      const y = originY + sin * distance;
       const cell = mapCell(x, y);
       if (cell === "1" || cell === "2") {
         const hitVertical = Math.floor(x) !== Math.floor(lastX);
@@ -187,6 +187,10 @@
       lastY = y;
     }
     return { distance: MAX_DEPTH, cell: "0", textureOffset: 0, side: 0 };
+  }
+
+  function castRay(angle) {
+    return castRayFrom(player.x, player.y, angle);
   }
 
   function hasLineOfSight(x1, y1, x2, y2) {
@@ -282,17 +286,33 @@
     }
   }
 
-  function projectEnemy(enemy) {
-    const dx = enemy.x - player.x;
-    const dy = enemy.y - player.y;
+  function projectEnemy(enemy, camera = player) {
+    const dx = enemy.x - camera.x;
+    const dy = enemy.y - camera.y;
     const distance = Math.hypot(dx, dy);
-    const angle = normalizeAngle(Math.atan2(dy, dx) - player.angle);
+    const angle = normalizeAngle(Math.atan2(dy, dx) - camera.angle);
     if (Math.abs(angle) > FOV * 0.78 || distance < 0.25) return null;
     const depth = distance * Math.cos(angle);
     const screenX = WIDTH / 2 + Math.tan(angle) * (WIDTH / (2 * Math.tan(FOV / 2)));
     const size = Math.min(520, 360 / Math.max(depth, 0.25));
     const groundY = VIEW_HEIGHT / 2 + size * 0.5;
     return { distance, depth, screenX, size, groundY, top: groundY - size };
+  }
+
+  function wallDepthAtScreenX(screenX, camera = player) {
+    const projectionPlane = WIDTH / (2 * Math.tan(FOV / 2));
+    const angleOffset = Math.atan((screenX - WIDTH / 2) / projectionPlane);
+    return castRayFrom(camera.x, camera.y, camera.angle + angleOffset).distance * Math.cos(angleOffset);
+  }
+
+  function dartTargetAtImpact(dart) {
+    if (!dart.target?.alive) return null;
+    const projection = projectEnemy(dart.target, dart.camera);
+    if (!projection) return null;
+    const withinX = Math.abs(dart.endX - projection.screenX) < projection.size * 0.42;
+    const withinY = dart.endY > projection.top + projection.size * 0.05 && dart.endY < projection.groundY - projection.size * 0.04;
+    const unobstructed = projection.depth < wallDepthAtScreenX(dart.endX, dart.camera) + 0.08;
+    return withinX && withinY && unobstructed && hasLineOfSight(dart.camera.x, dart.camera.y, dart.target.x, dart.target.y) ? dart.target : null;
   }
 
   function damageEnemy(enemy) {
@@ -311,7 +331,7 @@
       dart.age += dt;
       if (!dart.resolved && dart.age >= dart.duration) {
         dart.resolved = true;
-        damageEnemy(dart.target);
+        damageEnemy(dartTargetAtImpact(dart));
       }
     }
     darts = darts.filter((dart) => dart.age < dart.duration + 0.08);
@@ -337,7 +357,7 @@
       if (!projection) continue;
       const withinX = Math.abs(aim.x - projection.screenX) < projection.size * 0.42;
       const withinY = aim.y > projection.top + projection.size * 0.05 && aim.y < projection.groundY - projection.size * 0.04;
-      const visibleAtAim = aim.x >= 0 && aim.x < WIDTH && projection.depth < depthBuffer[Math.floor(aim.x)] + 0.08;
+      const visibleAtAim = projection.depth < wallDepthAtScreenX(aim.x) + 0.08;
       if (withinX && withinY && visibleAtAim && projection.distance < targetDistance && hasLineOfSight(player.x, player.y, enemy.x, enemy.y)) {
         target = enemy;
         targetDistance = projection.distance;
@@ -354,6 +374,7 @@
       startY: pose.muzzleY,
       endX: aim.x,
       endY: aim.y,
+      camera: { x: player.x, y: player.y, angle: player.angle },
       target,
       resolved: false,
     });
@@ -629,18 +650,18 @@
       drawVolumeBox(s, 17 + motion, 14, 14, 30, "#d6dcda", "#75807e", "#252c2b");
       drawVolumeEllipse(s, -12, 5, 31, 25, "#e1e6e3", "#909b99", "#3e4947", -0.08);
       drawVolumeEllipse(s, 13, 1, 25, 28, "#edf0ec", "#9aa5a2", "#424c4a", -0.1);
-      drawVolumeEllipse(s, 27, -17, 22, 21, "#edf1ed", "#9ca6a4", "#3e4746", -0.12);
+      drawVolumeEllipse(s, 24, -17, 20, 20, "#edf1ed", "#9ca6a4", "#3e4746", -0.12);
       s.fillStyle = "#727d7a";
       s.beginPath(); s.moveTo(10, -27); s.lineTo(15, -43); s.lineTo(25, -29); s.closePath(); s.fill(); s.stroke();
-      s.beginPath(); s.moveTo(30, -31); s.lineTo(41, -43); s.lineTo(45, -25); s.closePath(); s.fill(); s.stroke();
-      drawVolumeEllipse(s, 36, -5, 17, 12, "#d9ddd7", "#747e7b", "#292f2e", 0.08);
+      s.beginPath(); s.moveTo(28, -31); s.lineTo(38, -42); s.lineTo(42, -25); s.closePath(); s.fill(); s.stroke();
+      drawVolumeEllipse(s, 32, -5, 13, 11, "#d9ddd7", "#747e7b", "#292f2e", 0.08);
       s.fillStyle = "#46504e";
-      for (const [x, y, w, h] of [[-26,-5,7,6],[-11,8,7,6],[3,1,7,5],[-17,20,7,5],[12,15,7,6],[19,-18,6,5],[35,-18,6,5]]) s.fillRect(x, y, w, h);
-      s.fillStyle = "#ff3e30"; s.fillRect(18, -20, 6, 4); s.fillRect(34, -20, 6, 4);
-      s.fillStyle = "#111514"; s.beginPath(); s.ellipse(43, -6, 6, 5, 0, 0, Math.PI * 2); s.fill();
+      for (const [x, y, w, h] of [[-26,-5,7,6],[-11,8,7,6],[3,1,7,5],[-17,20,7,5],[12,15,7,6],[16,-18,6,5],[30,-18,6,5]]) s.fillRect(x, y, w, h);
+      s.fillStyle = "#ff3e30"; s.fillRect(15, -20, 6, 4); s.fillRect(29, -20, 6, 4);
+      s.fillStyle = "#111514"; s.beginPath(); s.ellipse(39, -6, 5, 4, 0, 0, Math.PI * 2); s.fill();
       s.fillStyle = "#e6dfc4";
-      s.beginPath(); s.moveTo(27, 4); s.lineTo(31, 14); s.lineTo(35, 4); s.closePath(); s.fill();
-      s.beginPath(); s.moveTo(37, 3); s.lineTo(41, 12); s.lineTo(44, 1); s.closePath(); s.fill();
+      s.beginPath(); s.moveTo(24, 4); s.lineTo(28, 14); s.lineTo(32, 4); s.closePath(); s.fill();
+      s.beginPath(); s.moveTo(33, 3); s.lineTo(37, 12); s.lineTo(40, 1); s.closePath(); s.fill();
     } else {
       drawVolumeBox(s, -22 + motion, 18, 16, 27, "#5a3830", "#2c1c19", "#0d0c0a");
       drawVolumeBox(s, 6 - motion, 18, 16, 27, "#5a3830", "#2c1c19", "#0d0c0a");
@@ -921,10 +942,10 @@
   document.addEventListener("mousemove", (event) => {
     if (state === "playing" && document.pointerLockElement === canvas) {
       const nextX = aim.x + event.movementX * 0.9;
+      const clampedX = clamp(nextX, AIM_BOUNDS.left, AIM_BOUNDS.right);
+      const overflowX = nextX - clampedX;
       setAim(nextX, aim.y + event.movementY * 0.9);
-      if (nextX < AIM_BOUNDS.left || nextX > AIM_BOUNDS.right) {
-        player.angle = normalizeAngle(player.angle + event.movementX * 0.0024);
-      }
+      if (overflowX !== 0) player.angle = normalizeAngle(player.angle + (overflowX / 0.9) * 0.0024);
     }
   });
   canvas.addEventListener("click", () => {

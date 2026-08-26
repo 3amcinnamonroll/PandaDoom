@@ -165,9 +165,7 @@
   }
 
   function normalizeAngle(angle) {
-    while (angle > Math.PI) angle -= Math.PI * 2;
-    while (angle < -Math.PI) angle += Math.PI * 2;
-    return angle;
+    return Math.atan2(Math.sin(angle), Math.cos(angle));
   }
 
   function turnToward(angle, target, maximumStep) {
@@ -318,7 +316,7 @@
     const bounds = MODEL_BOUNDS[enemy.type];
     const screenX = WIDTH / 2 + Math.tan(angle) * PROJECTION_PLANE;
     const size = Math.min(VIEW_HEIGHT * 1.8, (bounds.height * VIEW_HEIGHT) / Math.max(depth, 0.25));
-    const facingOffset = normalizeAngle(enemy.facing - camera.angle);
+    const facingOffset = normalizeAngle(enemy.facing - Math.atan2(dy, dx));
     const apparentHalfWidth = Math.abs(Math.cos(facingOffset)) * bounds.width / 2 +
       Math.abs(Math.sin(facingOffset)) * bounds.depth / 2;
     const halfWidth = Math.min(WIDTH, (apparentHalfWidth * PROJECTION_PLANE) / Math.max(depth, 0.25));

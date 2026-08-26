@@ -45,7 +45,7 @@
   const FOV = Math.PI / 3;
   const MAX_DEPTH = 22;
   const PLAYER_RADIUS = 0.2;
-  const AIM_BOUNDS = { left: WIDTH * 0.18, right: WIDTH * 0.82, top: VIEW_HEIGHT * 0.16, bottom: VIEW_HEIGHT * 0.84 };
+  const AIM_BOUNDS = { top: VIEW_HEIGHT * 0.16, bottom: VIEW_HEIGHT * 0.84 };
   const keys = Object.create(null);
   const touch = Object.create(null);
   let state = "title";
@@ -110,7 +110,7 @@
       { type: "ammo", x: 12.5, y: 14.2, active: true },
     ];
     darts = [];
-    setAim(WIDTH / 2, VIEW_HEIGHT / 2);
+    setAim(VIEW_HEIGHT / 2);
     message = "CLEAR 5 THREATS — FIND THE GREEN GATE";
     messageTimer = 4;
     muzzleFlash = 0;
@@ -160,8 +160,8 @@
     return Math.max(minimum, Math.min(maximum, value));
   }
 
-  function setAim(x, y) {
-    aim.x = clamp(x, AIM_BOUNDS.left, AIM_BOUNDS.right);
+  function setAim(y) {
+    aim.x = WIDTH / 2;
     aim.y = clamp(y, AIM_BOUNDS.top, AIM_BOUNDS.bottom);
     ui.crosshair.style.left = `${(aim.x / WIDTH) * 100}%`;
     ui.crosshair.style.top = `${(aim.y / HEIGHT) * 100}%`;
@@ -218,13 +218,12 @@
     messageTimer = Math.max(0, messageTimer - dt);
     exitPulse += dt;
 
-    const turn = ((keys.ArrowRight || keys.KeyE || touch.turnRight) ? 1 : 0) -
-      ((keys.ArrowLeft || keys.KeyQ || touch.turnLeft) ? 1 : 0);
+    const turn = ((keys.ArrowRight || keys.KeyE || keys.KeyL || touch.turnRight) ? 1 : 0) -
+      ((keys.ArrowLeft || keys.KeyQ || keys.KeyJ || touch.turnLeft) ? 1 : 0);
     player.angle = normalizeAngle(player.angle + turn * 2.15 * dt);
 
-    const aimHorizontal = (keys.KeyL ? 1 : 0) - (keys.KeyJ ? 1 : 0);
     const aimVertical = (keys.KeyK ? 1 : 0) - (keys.KeyI ? 1 : 0);
-    if (aimHorizontal || aimVertical) setAim(aim.x + aimHorizontal * 260 * dt, aim.y + aimVertical * 260 * dt);
+    if (aimVertical) setAim(aim.y + aimVertical * 260 * dt);
 
     const forward = ((keys.KeyW || keys.ArrowUp || touch.forward) ? 1 : 0) -
       ((keys.KeyS || keys.ArrowDown || touch.backward) ? 1 : 0);
@@ -735,7 +734,7 @@
     const gait = Math.sin(player.walkPhase * 0.5) * 13 * player.moveAmount;
     const originX = WIDTH / 2 + sway * 1.25 + gait;
     const originY = VIEW_HEIGHT - 2 + muzzleFlash * 22 + bob * 0.65;
-    const targetX = 3 + (aim.x - WIDTH / 2) * 0.16;
+    const targetX = 3;
     const targetY = -88 + (aim.y - VIEW_HEIGHT / 2) * 0.18;
     const rotation = clamp(Math.atan2(targetY, targetX) - Math.atan2(-88, 3), -0.34, 0.34);
     const cos = Math.cos(rotation);
@@ -941,11 +940,8 @@
   });
   document.addEventListener("mousemove", (event) => {
     if (state === "playing" && document.pointerLockElement === canvas) {
-      const nextX = aim.x + event.movementX * 0.9;
-      const clampedX = clamp(nextX, AIM_BOUNDS.left, AIM_BOUNDS.right);
-      const overflowX = nextX - clampedX;
-      setAim(nextX, aim.y + event.movementY * 0.9);
-      if (overflowX !== 0) player.angle = normalizeAngle(player.angle + (overflowX / 0.9) * 0.0024);
+      player.angle = normalizeAngle(player.angle + event.movementX * 0.0024);
+      setAim(aim.y + event.movementY * 0.9);
     }
   });
   canvas.addEventListener("click", () => {
@@ -1002,7 +998,7 @@
     }),
     start: startGame,
     shoot,
-    aimAt: setAim,
+    aimAt: (_x, y) => setAim(y),
     map: MAP.slice(),
   };
 }());
